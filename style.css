@@ -1,0 +1,132 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Segoe UI", sans-serif;
+  line-height: 1.6;
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+.container {
+  width: 85%;
+  max-width: 1000px;
+  margin: auto;
+  padding: 30px 0;
+}
+
+header {
+  background: #161b22;
+  text-align: center;
+  padding: 50px 20px;
+  border-bottom: 2px solid #00bcd4;
+}
+
+header h1 {
+  font-size: 3rem;
+}
+
+.glow {
+  color: #00bcd4;
+  text-shadow: 0 0 15px #00bcd4;
+}
+
+header .tagline {
+  font-size: 1.2rem;
+  margin: 15px 0;
+}
+
+header .contact a {
+  color: #00bcd4;
+  margin: 0 10px;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+/* Profile Picture */
+.profile-pic {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 3px solid #00bcd4;
+  margin-bottom: 15px;
+  object-fit: cover;
+  box-shadow: 0 0 15px #00bcd4;
+}
+
+/* Resume Buttons */
+.resume-btn {
+  display: inline-block;
+  margin: 8px 5px;
+  background: #00bcd4;
+  color: #0d1117;
+  padding: 8px 15px;
+  border-radius: 5px;
+  font-weight: bold;
+  text-decoration: none;
+  transition: background 0.3s ease;
+}
+
+.resume-btn:hover {
+  background: #0097a7;
+  color: #fff;
+}
+
+.resume-btn.view {
+  background: #161b22;
+  color: #00bcd4;
+  border: 2px solid #00bcd4;
+}
+
+.resume-btn.view:hover {
+  background: #00bcd4;
+  color: #0d1117;
+}
+
+section h2 {
+  margin-bottom: 20px;
+  border-bottom: 2px solid #00bcd4;
+  display: inline-block;
+  padding-bottom: 5px;
+  font-size: 1.5rem;
+}
+
+.job, .project {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #161b22;
+  border-left: 4px solid #00bcd4;
+  border-radius: 8px;
+}
+
+.skills-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.skills-grid span {
+  background: #00bcd4;
+  color: #0d1117;
+  padding: 10px 15px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: bold;
+  transition: transform 0.2s ease;
+}
+
+.skills-grid span:hover {
+  transform: scale(1.1);
+}
+
+footer {
+  text-align: center;
+  background: #161b22;
+  color: #aaa;
+  padding: 20px;
+  margin-top: 50px;
+  border-top: 2px solid #00bcd4;
+}
