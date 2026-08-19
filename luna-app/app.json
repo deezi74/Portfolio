@@ -1,0 +1,98 @@
+{
+  "expo": {
+    "name": "Luna",
+    "slug": "luna-ai-assistant",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "scheme": "luna",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#010305",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.deezi74.luna",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Luna listens for your voice so you can talk to her hands-free.",
+        "NSSpeechRecognitionUsageDescription": "Luna transcribes your speech to understand your requests.",
+        "NSCameraUsageDescription": "Luna uses the camera flash to control your flashlight.",
+        "NSCalendarsUsageDescription": "Luna reads and creates calendar events on your behalf.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.deezi74.luna",
+      "adaptiveIcon": {
+        "backgroundColor": "#010305",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": true,
+      "permissions": [
+        "RECORD_AUDIO",
+        "CAMERA",
+        "FLASHLIGHT",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "POST_NOTIFICATIONS",
+        "SCHEDULE_EXACT_ALARM",
+        "VIBRATE",
+        "INTERNET",
+        "WAKE_LOCK"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-sqlite",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Luna uses the camera flash to control your flashlight."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#0AF0FF"
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Luna reads and creates calendar events on your behalf."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Luna listens for your voice so you can talk to her hands-free."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Luna listens for your voice so you can talk to her hands-free.",
+          "speechRecognitionPermission": "Luna transcribes your speech to understand your requests.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
+    }
+  }
+}
