@@ -252,10 +252,33 @@ public class LunaBrain {
             if (reply == null || reply.trim().isEmpty()) reply = "(no reply)";
             store.logActivity("ask", "Q: " + question + "\nA: " + reply);
             listener.onReply(reply);
-        } catch (Exception e) {
-            store.logActivity("system", "Error asking Luna (on-device model): " + e.getMessage());
-            listener.onError("Error asking Luna: " + e.getMessage());
+        } catch (Throwable t) {
+            String msg = describeLocalModelError(t);
+            store.logActivity("system", "Error asking Luna (on-device model): " + msg);
+            listener.onError("Error asking Luna: " + msg);
         }
+    }
+
+    /**
+     * The vendored llama.cpp bridge collapses most load failures into
+     * UnsupportedArchitectureException with no message (see its own TODO comment) - a bare
+     * "null" isn't useful to a user, so give them something they can actually act on instead.
+     * Catches Throwable, not just Exception, since a failed native library load or an
+     * out-of-memory condition (a real risk for a multi-GB model on a phone) throws an Error,
+     * which "catch (Exception)" would let crash the app silently.
+     */
+    private static String describeLocalModelError(Throwable t) {
+        String msg = t.getMessage();
+        if (msg != null && !msg.trim().isEmpty()) return msg;
+        if (t instanceof OutOfMemoryError) {
+            return "Ran out of memory loading the model - it's likely too large for this device.";
+        }
+        if (t instanceof UnsatisfiedLinkError) {
+            return "Couldn't load Luna's on-device model engine (" + t.getClass().getSimpleName() + ").";
+        }
+        return "Couldn't load that model file (" + t.getClass().getSimpleName() + ") - it may be an " +
+                "unsupported architecture/quantization, an incomplete download, or too large for " +
+                "this device. Try a different, more standard GGUF model.";
     }
 
     private static String describeStep(String name, JSONObject args) {
@@ -297,8 +320,8 @@ public class LunaBrain {
                 llm.loadModelIfNeeded(getLocalModelFilePath());
                 String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
                 applyExtractedArgs(extractJsonObject(llm.generate(null, prompt)), listener);
-            } catch (Exception e) {
-                listener.onError("Error capturing (on-device model): " + e.getMessage());
+            } catch (Throwable t) {
+                listener.onError("Error capturing: " + describeLocalModelError(t));
             }
             return;
         }

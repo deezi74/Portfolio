@@ -34,14 +34,17 @@ class LocalLlm(context: Context) {
     @Throws(Exception::class)
     fun loadModelIfNeeded(path: String) {
         if (loadedPath == path) return
+        // A failed load leaves the underlying engine's state machine at Error, not back at
+        // Initialized - if we don't reset it *every* time (not just when our own cache thinks
+        // something is loaded), every retry after the first failure fails immediately with
+        // "Cannot load model in Error!" instead of actually trying again. cleanUp() also covers
+        // ModelReady (switching from a previously-successful model); it throws for
+        // Initialized/Uninitialized, which just means there's nothing to reset - ignored.
+        loadedPath = null
         runBlocking(scope.coroutineContext) {
-            if (loadedPath != null) {
-                try {
-                    engine.cleanUp()
-                } catch (ignored: Exception) {
-                    // best-effort - loadModel below will surface a real error if this leaves
-                    // the engine in a bad state
-                }
+            try {
+                engine.cleanUp()
+            } catch (ignored: Exception) {
             }
             engine.loadModel(path)
         }
