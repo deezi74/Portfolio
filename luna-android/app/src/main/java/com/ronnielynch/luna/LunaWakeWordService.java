@@ -64,7 +64,9 @@ public class LunaWakeWordService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Notification notification = buildNotification("Listening for “Luna…”");
-        if (Build.VERSION.SDK_INT >= 29) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            // FOREGROUND_SERVICE_TYPE_MICROPHONE itself requires API 30, even though
+            // the 3-arg startForeground() overload exists from API 29.
             startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         } else {
             startForeground(NOTIF_ID, notification);

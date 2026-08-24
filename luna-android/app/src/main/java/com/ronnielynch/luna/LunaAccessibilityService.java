@@ -73,6 +73,13 @@ public class LunaAccessibilityService extends AccessibilityService {
     }
 
     @Override
+    public void onDestroy() {
+        instance = null;
+        runOnMainSync(this::hideMarkersInternal);
+        super.onDestroy();
+    }
+
+    @Override
     public boolean onUnbind(android.content.Intent intent) {
         instance = null;
         runOnMainSync(this::hideMarkersInternal);
@@ -176,13 +183,21 @@ public class LunaAccessibilityService extends AccessibilityService {
 
     public JSONObject pressKey(String key) throws Exception {
         boolean ok;
-        switch (key == null ? "" : key.toLowerCase()) {
+        switch (key == null ? "" : key.toLowerCase(java.util.Locale.US)) {
             case "home":
                 ok = performGlobalAction(GLOBAL_ACTION_HOME);
                 break;
             case "enter":
                 AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-                ok = focused != null && focused.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER);
+                if (focused == null) {
+                    ok = false;
+                } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    ok = focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+                } else {
+                    // ACTION_IME_ENTER needs API 30+; older devices fall back to a
+                    // plain click on the focused field (works for many search boxes).
+                    ok = focused.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                }
                 break;
             case "back":
             default:

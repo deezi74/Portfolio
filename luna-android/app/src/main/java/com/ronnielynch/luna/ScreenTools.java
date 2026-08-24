@@ -94,7 +94,7 @@ public class ScreenTools {
         if (appName == null || appName.trim().isEmpty()) {
             return error("No app name given.");
         }
-        String query = appName.trim().toLowerCase();
+        String query = appName.trim().toLowerCase(java.util.Locale.US);
 
         PackageManager pm = context.getPackageManager();
         Intent launcherQuery = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
@@ -102,7 +102,7 @@ public class ScreenTools {
 
         ResolveInfo bestMatch = null;
         for (ResolveInfo info : apps) {
-            String label = info.loadLabel(pm).toString().toLowerCase();
+            String label = info.loadLabel(pm).toString().toLowerCase(java.util.Locale.US);
             if (label.equals(query)) {
                 bestMatch = info;
                 break;

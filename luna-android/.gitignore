@@ -1,0 +1,14 @@
+# Local machine/SDK config - never commit, path is different for everyone
+local.properties
+
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Android Studio
+.idea/
+*.iml
+.DS_Store
+captures/

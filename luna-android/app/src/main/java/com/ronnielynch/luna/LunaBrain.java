@@ -148,9 +148,10 @@ public class LunaBrain {
         }
 
         JSONArray history = loadHistory();
-        history.put(userTurn(userMessage));
 
         try {
+            history.put(userTurn(userMessage));
+
             for (int step = 0; step < MAX_TOOL_STEPS; step++) {
                 JSONObject responseJson = callGemini(apiKey, history);
 
