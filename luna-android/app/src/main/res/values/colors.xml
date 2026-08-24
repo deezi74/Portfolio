@@ -1,13 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorPrimary">#161B22</color>
-    <color name="colorPrimaryDark">#0D1117</color>
-    <color name="colorAccent">#00BCD4</color>
-    <color name="colorControlHighlight">#0097A7</color>
-    <color name="colorControlNormal">#00BCD4</color>
-    <color name="lunaBackground">#0D1117</color>
-    <color name="lunaCard">#161B22</color>
+    <color name="colorPrimary">#131922</color>
+    <color name="colorPrimaryDark">#0A0E14</color>
+    <color name="colorAccent">#22D3EE</color>
+    <color name="colorControlHighlight">#0EA5C4</color>
+    <color name="colorControlNormal">#22D3EE</color>
+
+    <color name="lunaBackground">#0A0E14</color>
+    <color name="lunaCard">#131922</color>
+    <color name="lunaCard2">#171F2B</color>
+    <color name="lunaBorder">#232D3D</color>
     <color name="lunaText">#E6EDF3</color>
-    <color name="lunaTextDim">#9AA4B2</color>
-    <color name="lunaUserBubble">#1F2937</color>
+    <color name="lunaTextDim">#8B96A5</color>
+    <color name="lunaOk">#34D399</color>
+
+    <color name="typePerson">#F472B6</color>
+    <color name="typeLocation">#4ADE80</color>
+    <color name="typeDocument">#60A5FA</color>
+    <color name="typeConcept">#D4E157</color>
+    <color name="typeAiModel">#A78BFA</color>
+    <color name="typeTechnology">#22D3EE</color>
+    <color name="typeTask">#FBBF24</color>
+    <color name="typeThought">#E879F9</color>
 </resources>

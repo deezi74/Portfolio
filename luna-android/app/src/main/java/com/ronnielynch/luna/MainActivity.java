@@ -13,12 +13,11 @@ import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.text.InputType;
-import android.text.method.ScrollingMovementMethod;
-import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
+import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityManager;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -27,17 +26,18 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
+import java.text.DateFormat;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
- * Luna - voice + text AI phone assistant. This class is just the chat UI; the
- * actual chat/tool-calling logic lives in {@link LunaBrain} so the
- * always-listening background service can drive it too.
+ * Luna - a live personal knowledge-graph assistant. This class is just the
+ * UI shell: the graph lives in {@link GraphStore}/{@link GraphView} and the
+ * chat/tool-calling logic lives in {@link LunaBrain}, so the always-listening
+ * background service can drive the same brain without this Activity running.
  */
 public class MainActivity extends Activity {
 
@@ -46,47 +46,83 @@ public class MainActivity extends Activity {
     private static final int REQ_RECORD_AUDIO_FOR_ALWAYS_ON = 101;
     private static final int REQ_NOTIFICATIONS = 102;
 
-    private TextView chatText;
-    private TextView statusText;
-    private ScrollView scrollView;
-    private EditText inputBox;
+    private GraphView graphView;
+    private TextView knowledgeSub, physicsLabel, systemsLabel, orbLabel;
+    private EditText askInput;
+    private ImageButton micButton, orbButton;
+
     private TextToSpeech tts;
     private LunaBrain brain;
-    private final StringBuilder chatLog = new StringBuilder();
     private boolean busy = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                WindowManager.LayoutParams.FLAG_FULLSCREEN);
-
         setContentView(R.layout.activity_main);
 
         brain = new LunaBrain(this);
 
-        chatText = findViewById(R.id.chatText);
-        chatText.setMovementMethod(new ScrollingMovementMethod());
-        statusText = findViewById(R.id.statusText);
-        scrollView = findViewById(R.id.scrollView);
-        inputBox = findViewById(R.id.inputBox);
-        ImageButton micButton = findViewById(R.id.micButton);
-        Button sendButton = findViewById(R.id.sendButton);
+        graphView = findViewById(R.id.graphView);
+        knowledgeSub = findViewById(R.id.knowledgeSub);
+        physicsLabel = findViewById(R.id.physicsLabel);
+        systemsLabel = findViewById(R.id.systemsLabel);
+        orbLabel = findViewById(R.id.orbLabel);
+        askInput = findViewById(R.id.askInput);
+        micButton = findViewById(R.id.micButton);
+        orbButton = findViewById(R.id.orbButton);
+
         ImageButton settingsButton = findViewById(R.id.settingsButton);
+        Button filterButton = findViewById(R.id.filterButton);
+        Button zoomInButton = findViewById(R.id.zoomInButton);
+        Button zoomOutButton = findViewById(R.id.zoomOutButton);
+        Button zoomFitButton = findViewById(R.id.zoomFitButton);
+        Button traceButton = findViewById(R.id.traceButton);
+        Button activityButton = findViewById(R.id.activityButton);
+        Button captureButton = findViewById(R.id.captureButton);
+        Button systemButton = findViewById(R.id.systemButton);
+
+        graphView.setStatsListener(this::refreshStats);
+        graphView.setStore(brain.getStore());
+        graphView.setOnNodeSelectedListener(new GraphView.OnNodeSelectedListener() {
+            @Override
+            public void onNodeSelected(String type, String label, String note, float screenX, float screenY) {
+                String msg = label + " · " + type + (note != null && !note.isEmpty() ? "\n" + note : "");
+                Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+            }
+            @Override
+            public void onNodeDeselected() { }
+        });
 
         tts = new TextToSpeech(this, status -> {
             if (status == TextToSpeech.SUCCESS) tts.setLanguage(Locale.US);
         });
 
-        sendButton.setOnClickListener(v -> sendCurrentInput());
-        micButton.setOnClickListener(v -> startVoiceInput());
         settingsButton.setOnClickListener(v -> showSettingsDialog());
+        systemButton.setOnClickListener(v -> showSettingsDialog());
+        filterButton.setOnClickListener(v -> showFilterDialog());
+        zoomInButton.setOnClickListener(v -> graphView.zoomBy(1.25f));
+        zoomOutButton.setOnClickListener(v -> graphView.zoomBy(0.8f));
+        zoomFitButton.setOnClickListener(v -> graphView.fitToScreen());
+        traceButton.setOnClickListener(v -> showActivityDialog());
+        activityButton.setOnClickListener(v -> showActivityDialog());
+        captureButton.setOnClickListener(v -> showCaptureDialog());
+        micButton.setOnClickListener(v -> startVoiceInput());
+        orbButton.setOnClickListener(v -> startVoiceInput());
 
-        restoreHistory();
+        askInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEND
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_DOWN)) {
+                submitAsk();
+                return true;
+            }
+            return false;
+        });
+
+        refreshStats();
+        graphView.post(graphView::fitToScreen);
+
         if (brain.getApiKey().isEmpty()) {
-            appendChat("Luna: Add your Gemini API key (gear icon, top right) to start chatting.");
+            systemsLabel.setText("Add a Gemini API key to connect");
             showSettingsDialog();
         }
 
@@ -95,31 +131,24 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---------- restoring history ----------
+    // ---------- stats ----------
 
-    private void restoreHistory() {
-        JSONArray display = brain.getDisplayableHistory();
-        for (int i = 0; i < display.length(); i++) {
-            try {
-                JSONObject turn = display.getJSONObject(i);
-                String role = turn.getString("role");
-                String text = turn.getString("text");
-                appendChat(("user".equals(role) ? "You: " : "Luna: ") + text);
-            } catch (Exception ignored) {
-            }
-        }
-        if (display.length() > 0) {
-            appendChat("— restored from your last conversation —");
-        }
+    private void refreshStats() {
+        GraphStore store = brain.getStore();
+        Set<String> domains = new HashSet<>();
+        for (GraphStore.Entity e : store.entities) domains.add(e.type);
+        knowledgeSub.setText(domains.size() + " domain" + (domains.size() == 1 ? "" : "s")
+                + " · " + store.entities.size() + " live entit" + (store.entities.size() == 1 ? "y" : "ies"));
+        physicsLabel.setText("LIVE PHYSICS — " + graphView.visibleNodeCount() + " nodes · " + graphView.visibleLinkCount() + " links");
     }
 
-    // ---------- input handling ----------
+    // ---------- ask / voice input ----------
 
-    private void sendCurrentInput() {
-        String message = inputBox.getText().toString().trim();
-        if (message.isEmpty() || busy) return;
-        inputBox.setText("");
-        sendToLuna(message);
+    private void submitAsk() {
+        String text = askInput.getText().toString().trim();
+        if (text.isEmpty() || busy) return;
+        askInput.setText("");
+        sendAsk(text);
     }
 
     private void startVoiceInput() {
@@ -134,7 +163,7 @@ public class MainActivity extends Activity {
     private void launchSpeechRecognizer() {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Luna...");
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Ask Luna...");
         try {
             startActivityForResult(intent, REQ_SPEECH_INPUT);
         } catch (Exception e) {
@@ -150,11 +179,8 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_RECORD_AUDIO && granted) {
             launchSpeechRecognizer();
         } else if (requestCode == REQ_RECORD_AUDIO_FOR_ALWAYS_ON) {
-            if (granted) {
-                requestNotificationsThenStartAlwaysListening();
-            } else {
-                Toast.makeText(this, "Always-listening needs microphone access.", Toast.LENGTH_SHORT).show();
-            }
+            if (granted) requestNotificationsThenStartAlwaysListening();
+            else Toast.makeText(this, "Always-listening needs microphone access.", Toast.LENGTH_SHORT).show();
         } else if (requestCode == REQ_NOTIFICATIONS) {
             ensureAlwaysListeningRunning();
         }
@@ -165,16 +191,183 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_SPEECH_INPUT && resultCode == RESULT_OK && data != null) {
             ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-            if (results != null && !results.isEmpty()) {
-                sendToLuna(results.get(0));
+            if (results != null && !results.isEmpty()) sendAsk(results.get(0));
+        }
+    }
+
+    private void sendAsk(String question) {
+        if (brain.getApiKey().isEmpty()) {
+            Toast.makeText(this, "Add your Gemini API key first (gear icon).", Toast.LENGTH_SHORT).show();
+            showSettingsDialog();
+            return;
+        }
+
+        setBusy(true, "THINKING");
+        new Thread(() -> brain.ask(question, new LunaBrain.Listener() {
+            @Override
+            public void onToolStep(String description) {
+                runOnUiThread(() -> setBusy(true, "THINKING"));
+            }
+
+            @Override
+            public void onReply(String text) {
+                runOnUiThread(() -> {
+                    setBusy(false, "READY");
+                    Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show();
+                    speak(text);
+                });
+            }
+
+            @Override
+            public void onError(String text) {
+                runOnUiThread(() -> {
+                    setBusy(false, "READY");
+                    Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show();
+                });
+            }
+        })).start();
+    }
+
+    private void setBusy(boolean value, String orbState) {
+        busy = value;
+        orbLabel.setText(orbState);
+    }
+
+    // ---------- filter dialog ----------
+
+    private void showFilterDialog() {
+        GraphStore store = brain.getStore();
+        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (GraphStore.Entity e : store.entities) counts.merge(e.type, 1, Integer::sum);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        layout.setPadding(pad, pad, pad, pad);
+
+        for (java.util.Map.Entry<String, GraphStore.TypeMeta> entry : GraphStore.TYPES.entrySet()) {
+            String type = entry.getKey();
+            Integer count = counts.get(type);
+            if (count == null) continue;
+            GraphStore.TypeMeta meta = entry.getValue();
+
+            CheckBox cb = new CheckBox(this);
+            cb.setText(meta.icon + "  " + meta.label + " (" + count + ")");
+            cb.setChecked(graphView.isTypeVisible(type));
+            cb.setOnCheckedChangeListener((btn, checked) -> {
+                graphView.setTypeVisible(type, checked);
+                refreshStats();
+            });
+            layout.addView(cb);
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Filter entities")
+                .setView(layout)
+                .setPositiveButton("Done", null)
+                .show();
+    }
+
+    // ---------- activity / trace dialog ----------
+
+    private void showActivityDialog() {
+        List<GraphStore.ActivityItem> items = brain.getStore().activity;
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        layout.setPadding(pad, pad, pad, pad);
+        scroll.addView(layout);
+
+        if (items.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("Nothing yet — capture something or ask Luna a question.");
+            layout.addView(empty);
+        } else {
+            DateFormat fmt = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT);
+            for (GraphStore.ActivityItem item : items) {
+                TextView tv = new TextView(this);
+                tv.setText(item.kind.toUpperCase(Locale.US) + " · " + fmt.format(new java.util.Date(item.at)) + "\n" + item.text);
+                tv.setPadding(0, 0, 0, dp(14));
+                layout.addView(tv);
             }
         }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Activity")
+                .setView(scroll)
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    // ---------- capture dialog ----------
+
+    private void showCaptureDialog() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        layout.setPadding(pad, pad, pad, pad);
+
+        TextView help = new TextView(this);
+        help.setText("Paste a note, contact, or document excerpt. Luna reads it and adds what it mentions to your knowledge graph.");
+        help.setPadding(0, 0, 0, dp(10));
+        layout.addView(help);
+
+        EditText input = new EditText(this);
+        input.setHint("Paste or type something for Luna to learn...");
+        input.setMinLines(4);
+        input.setGravity(android.view.Gravity.TOP);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        layout.addView(input);
+
+        TextView status = new TextView(this);
+        status.setPadding(0, dp(10), 0, 0);
+        layout.addView(status);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Capture")
+                .setView(layout)
+                .setPositiveButton("Capture", null)
+                .setNegativeButton("Close", null)
+                .show();
+
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) return;
+            if (brain.getApiKey().isEmpty()) {
+                status.setText("Add your Gemini API key first (gear icon).");
+                return;
+            }
+            status.setText("Reading...");
+            new Thread(() -> brain.capture(text, new LunaBrain.CaptureListener() {
+                @Override
+                public void onResult(int addedEntities, int addedLinks) {
+                    runOnUiThread(() -> {
+                        graphView.rebuildFromStore();
+                        refreshStats();
+                        if (addedEntities == 0) {
+                            status.setText("Luna didn't find anything to remember in that.");
+                        } else {
+                            status.setText("Found " + addedEntities + " new entit" + (addedEntities == 1 ? "y" : "ies")
+                                    + " and " + addedLinks + " link" + (addedLinks == 1 ? "" : "s") + ".");
+                            input.setText("");
+                        }
+                    });
+                }
+
+                @Override
+                public void onError(String text2) {
+                    runOnUiThread(() -> status.setText(text2));
+                }
+            })).start();
+        });
     }
 
     // ---------- settings ----------
 
     private void showSettingsDialog() {
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        int pad = dp(16);
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -198,7 +391,7 @@ public class MainActivity extends Activity {
         layout.addView(alwaysListenSwitch);
 
         TextView alwaysHelp = new TextView(this);
-        alwaysHelp.setText("Keeps the mic listening in the background, with an always-on notification while it's active. Uses more battery.");
+        alwaysHelp.setText("Keeps the mic listening in the background, with an always-on notification while active. Uses more battery.");
         alwaysHelp.setTextSize(12);
         alwaysHelp.setPadding(0, 4, 0, pad);
         layout.addView(alwaysHelp);
@@ -210,9 +403,7 @@ public class MainActivity extends Activity {
         layout.addView(muteSwitch);
 
         Button screenControlButton = new Button(this);
-        screenControlButton.setText(isAccessibilityServiceEnabled()
-                ? "Screen control: ON (tap to manage)"
-                : "Enable screen control...");
+        screenControlButton.setText(isAccessibilityServiceEnabled() ? "Screen control: ON (tap to manage)" : "Enable screen control...");
         screenControlButton.setOnClickListener(v -> openAccessibilitySettings());
         layout.addView(screenControlButton);
 
@@ -222,15 +413,23 @@ public class MainActivity extends Activity {
         screenHelp.setPadding(0, 4, 0, pad);
         layout.addView(screenHelp);
 
-        Button clearHistoryButton = new Button(this);
-        clearHistoryButton.setText("Clear chat history");
-        clearHistoryButton.setOnClickListener(v -> {
-            brain.clearHistory();
-            chatLog.setLength(0);
-            chatText.setText("");
-            Toast.makeText(this, "Chat history cleared", Toast.LENGTH_SHORT).show();
+        Button clearGraphButton = new Button(this);
+        clearGraphButton.setText("Clear knowledge graph");
+        clearGraphButton.setOnClickListener(v -> {
+            brain.getStore().clearGraph();
+            graphView.rebuildFromStore();
+            refreshStats();
+            Toast.makeText(this, "Knowledge graph cleared", Toast.LENGTH_SHORT).show();
         });
-        layout.addView(clearHistoryButton);
+        layout.addView(clearGraphButton);
+
+        Button clearActivityButton = new Button(this);
+        clearActivityButton.setText("Clear activity history");
+        clearActivityButton.setOnClickListener(v -> {
+            brain.getStore().clearActivity();
+            Toast.makeText(this, "Activity history cleared", Toast.LENGTH_SHORT).show();
+        });
+        layout.addView(clearActivityButton);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
@@ -242,16 +441,12 @@ public class MainActivity extends Activity {
                     String key = keyInput.getText().toString().trim();
                     brain.setApiKey(key);
                     brain.setMuted(muteSwitch.isChecked());
+                    if (!key.isEmpty()) systemsLabel.setText("All systems connected");
 
                     boolean wantsAlwaysListening = alwaysListenSwitch.isChecked();
                     brain.setAlwaysListening(wantsAlwaysListening);
-                    if (wantsAlwaysListening) {
-                        requestRecordAudioThenStartAlwaysListening();
-                    } else {
-                        LunaWakeWordService.stop(this);
-                    }
-
-                    if (!key.isEmpty()) appendChat("Luna: Settings saved.");
+                    if (wantsAlwaysListening) requestRecordAudioThenStartAlwaysListening();
+                    else LunaWakeWordService.stop(this);
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -281,8 +476,7 @@ public class MainActivity extends Activity {
     private boolean isAccessibilityServiceEnabled() {
         AccessibilityManager am = (AccessibilityManager) getSystemService(Context.ACCESSIBILITY_SERVICE);
         if (am == null) return false;
-        List<AccessibilityServiceInfo> enabled =
-                am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
+        List<AccessibilityServiceInfo> enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
         for (AccessibilityServiceInfo info : enabled) {
             if (getPackageName().equals(info.getResolveInfo().serviceInfo.packageName)) return true;
         }
@@ -294,54 +488,10 @@ public class MainActivity extends Activity {
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
     }
 
-    // ---------- talking to Luna ----------
+    // ---------- helpers ----------
 
-    private void sendToLuna(String userMessage) {
-        if (brain.getApiKey().isEmpty()) {
-            appendChat("Luna: Add your Gemini API key first (gear icon, top right).");
-            showSettingsDialog();
-            return;
-        }
-
-        appendChat("You: " + userMessage);
-        setBusy(true, "Thinking...");
-
-        new Thread(() -> brain.processUserMessage(userMessage, new LunaBrain.Listener() {
-            @Override
-            public void onToolStep(String description) {
-                runOnUiThread(() -> setBusy(true, description));
-            }
-
-            @Override
-            public void onReply(String text) {
-                runOnUiThread(() -> {
-                    appendChat("Luna: " + text);
-                    setBusy(false, "Tap the mic and say ‘Luna’, or type below");
-                    speak(text);
-                });
-            }
-
-            @Override
-            public void onError(String text) {
-                runOnUiThread(() -> {
-                    appendChat("Luna: " + text);
-                    setBusy(false, "Tap the mic and say ‘Luna’, or type below");
-                });
-            }
-        })).start();
-    }
-
-    // ---------- UI helpers ----------
-
-    private void setBusy(boolean value, String status) {
-        busy = value;
-        statusText.setText(status);
-    }
-
-    private void appendChat(String line) {
-        chatLog.append(line).append("\n\n");
-        chatText.setText(chatLog.toString());
-        scrollView.post(() -> scrollView.fullScroll(View.FOCUS_DOWN));
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density);
     }
 
     private void speak(String text) {

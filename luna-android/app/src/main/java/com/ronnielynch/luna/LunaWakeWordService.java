@@ -154,7 +154,7 @@ public class LunaWakeWordService extends Service {
         updateNotification("Luna heard: “" + command + "”");
         speak(null); // stop any previous speech before Luna starts "thinking"
         final String finalCommand = command;
-        new Thread(() -> brain.processUserMessage(finalCommand, new LunaBrain.Listener() {
+        new Thread(() -> brain.ask(finalCommand, new LunaBrain.Listener() {
             @Override
             public void onToolStep(String description) {
                 updateNotification(description);

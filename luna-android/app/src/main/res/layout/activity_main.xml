@@ -3,105 +3,282 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/lunaBackground">
+    android:background="@color/lunaBackground"
+    android:padding="10dp">
 
-    <!-- Top bar -->
-    <RelativeLayout
+    <!-- Header -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/lunaCard"
-        android:padding="14dp">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="8dp">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_centerInParent="true"
-            android:text="LUNA"
-            android:textColor="@color/colorAccent"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.3" />
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LUNA"
+                android:textColor="@color/colorAccent"
+                android:textStyle="bold"
+                android:textSize="22sp"
+                android:letterSpacing="0.3" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PERSONAL INTELLIGENCE"
+                android:textColor="@color/lunaTextDim"
+                android:textSize="10sp"
+                android:letterSpacing="0.15" />
+        </LinearLayout>
 
         <ImageButton
             android:id="@+id/settingsButton"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:layout_alignParentEnd="true"
-            android:layout_centerVertical="true"
-            android:background="@android:color/transparent"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@color/lunaCard2"
             android:src="@android:drawable/ic_menu_manage"
             android:contentDescription="Settings" />
-    </RelativeLayout>
+    </LinearLayout>
 
-    <!-- Status line -->
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:paddingTop="10dp"
-        android:paddingBottom="10dp"
-        android:text="Tap the mic and say \'Luna\', or type below"
-        android:textColor="@color/lunaTextDim"
-        android:textSize="13sp" />
-
-    <!-- Chat log -->
-    <ScrollView
-        android:id="@+id/scrollView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:padding="14dp">
-
-        <TextView
-            android:id="@+id/chatText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="@color/lunaText"
-            android:textSize="15sp"
-            android:lineSpacingExtra="4dp" />
-    </ScrollView>
-
-    <!-- Input row -->
+    <!-- Knowledge card -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:background="@color/lunaCard"
-        android:padding="8dp">
+        android:padding="14dp"
+        android:layout_marginBottom="8dp">
 
-        <ImageButton
-            android:id="@+id/micButton"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="@android:color/transparent"
-            android:src="@android:drawable/ic_btn_speak_now"
-            android:contentDescription="Voice input" />
-
-        <EditText
-            android:id="@+id/inputBox"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="6dp"
-            android:layout_marginEnd="6dp"
-            android:hint="Ask Luna anything..."
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="CONNECTED KNOWLEDGE"
+                android:textColor="@color/lunaTextDim"
+                android:textSize="10sp"
+                android:letterSpacing="0.1" />
+
+            <TextView
+                android:id="@+id/knowledgeSub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0 domains · 0 live entities"
+                android:textColor="@color/lunaText"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/filterButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Filter"
+            android:textSize="12sp"
+            android:backgroundTint="@color/lunaCard2"
+            android:textColor="@color/lunaText" />
+    </LinearLayout>
+
+    <!-- Graph -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/lunaCard"
+        android:layout_marginBottom="8dp">
+
+        <com.ronnielynch.luna.GraphView
+            android:id="@+id/graphView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/physicsLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="10dp"
+            android:text="LIVE PHYSICS — 0 nodes · 0 links"
+            android:textColor="@color/lunaTextDim"
+            android:textSize="9sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="8dp"
+            android:orientation="vertical">
+
+            <Button
+                android:id="@+id/zoomInButton"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginBottom="4dp"
+                android:text="+"
+                android:padding="0dp"
+                android:minWidth="0dp"
+                android:backgroundTint="@color/lunaCard2"
+                android:textColor="@color/lunaText" />
+
+            <Button
+                android:id="@+id/zoomOutButton"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginBottom="4dp"
+                android:text="−"
+                android:padding="0dp"
+                android:minWidth="0dp"
+                android:backgroundTint="@color/lunaCard2"
+                android:textColor="@color/lunaText" />
+
+            <Button
+                android:id="@+id/zoomFitButton"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text="⤢"
+                android:padding="0dp"
+                android:minWidth="0dp"
+                android:backgroundTint="@color/lunaCard2"
+                android:textColor="@color/lunaText" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="10dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <ImageButton
+                android:id="@+id/orbButton"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:background="@drawable/orb_background"
+                android:src="@android:drawable/ic_btn_speak_now"
+                android:contentDescription="Talk to Luna" />
+
+            <TextView
+                android:id="@+id/orbLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="READY"
+                android:textColor="@color/colorAccent"
+                android:textSize="9sp"
+                android:letterSpacing="0.1" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Systems row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@color/lunaCard"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp">
+
+        <TextView
+            android:id="@+id/systemsLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="All systems connected"
+            android:textColor="@color/lunaTextDim"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/traceButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Trace ›"
+            android:textSize="12sp"
+            android:backgroundTint="@android:color/transparent"
+            android:textColor="@color/colorAccent" />
+    </LinearLayout>
+
+    <!-- Ask bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@color/lunaCard"
+        android:padding="6dp"
+        android:layout_marginBottom="8dp">
+
+        <EditText
+            android:id="@+id/askInput"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Ask Luna about your world"
             android:textColor="@color/lunaText"
             android:textColorHint="@color/lunaTextDim"
-            android:background="@color/lunaBackground"
+            android:background="@android:color/transparent"
             android:padding="10dp"
             android:inputType="text"
             android:imeOptions="actionSend" />
 
+        <ImageButton
+            android:id="@+id/micButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:contentDescription="Voice input" />
+    </LinearLayout>
+
+    <!-- Bottom nav -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@color/lunaCard">
+
         <Button
-            android:id="@+id/sendButton"
-            android:layout_width="wrap_content"
+            android:id="@+id/activityButton"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Send"
-            android:backgroundTint="@color/colorAccent"
-            android:textColor="@color/lunaBackground" />
+            android:layout_weight="1"
+            android:text="↻ Activity"
+            android:textSize="12sp"
+            android:backgroundTint="@android:color/transparent"
+            android:textColor="@color/lunaTextDim" />
+
+        <Button
+            android:id="@+id/captureButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="+ Capture"
+            android:textSize="12sp"
+            android:backgroundTint="@android:color/transparent"
+            android:textColor="@color/lunaTextDim" />
+
+        <Button
+            android:id="@+id/systemButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="⚙ System"
+            android:textSize="12sp"
+            android:backgroundTint="@android:color/transparent"
+            android:textColor="@color/lunaTextDim" />
     </LinearLayout>
 
 </LinearLayout>
