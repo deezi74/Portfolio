@@ -22,14 +22,20 @@ private `SharedPreferences` file on the device only - along with your
 knowledge graph and activity log - nothing is synced to a server, by design,
 since this app has none.
 
-Prefer not to use a cloud key at all? In Settings, switch the provider to
-**"Local model on this device"** and point it at an Ollama-compatible server
-you already have running with a model pulled - on the phone itself (e.g. via
-Termux) or another device on your network - plus the model's name (e.g.
-`llama3.2:3b`). No API key, nothing leaves your network. Trade-off: local
-models don't get the phone-control tools (open_app/show_screen/tap/...) -
-just knowledge capture and grounded Q&A - since reliably driving a multi-step
-tool loop needs more than most small on-device models can promise.
+Prefer not to use a cloud key at all? Settings has two local, no-API-key options:
+
+- **Local server on this device** - points at an Ollama-compatible server you
+  already have running with a model pulled, on the phone itself (e.g. via
+  Termux) or another device on your network, by URL + model name.
+- **Local model file, on-device** - pick an actual `.gguf` file you've
+  already downloaded (from a file picker, no server needed at all) and Luna
+  runs it directly, on-device, via a vendored copy of llama.cpp's own
+  Kotlin/JNI bridge (see "On-device GGUF models" below).
+
+Either way, nothing leaves your network - and both share the same trade-off:
+local models don't get the phone-control tools (open_app/show_screen/tap/...)
+- just knowledge capture and grounded Q&A - since reliably driving a
+multi-step tool loop needs more than most local models can promise right now.
 
 ## What's in here
 
@@ -49,6 +55,14 @@ LunaAccessibilityService.java    # reads the screen, draws numbered circle marke
                                   # performs taps/typing/scrolling
 LunaWakeWordService.java         # optional foreground service: restarts speech
                                   # recognition in a loop, listens for "Luna"
+kotlin/.../LocalLlm.kt           # plain-Java-callable wrapper around the on-device
+                                  # llama.cpp bridge below, for the local-file provider
+kotlin/com/arm/aichat/**         # vendored from llama.cpp's own examples/llama.android -
+                                  # the Kotlin/coroutines + JNI bridge to llama.cpp itself
+cpp/ai_chat.cpp, cpp/logging.h   # ditto (JNI side); logging.h has one small patch for
+                                  # Luna's lower minSdk - see comment in the file
+cpp/CMakeLists.txt               # fetches llama.cpp's C++ source at build time (not
+                                  # committed here - see comments in the file) and builds it
 res/xml/accessibility_service_config.xml
 AndroidManifest.xml              # INTERNET, RECORD_AUDIO, notification + foreground
                                   # service permissions, both services registered

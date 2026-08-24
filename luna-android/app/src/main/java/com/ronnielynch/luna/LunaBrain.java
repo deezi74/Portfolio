@@ -31,9 +31,11 @@ public class LunaBrain {
     private static final String PREF_PROVIDER = "provider";
     private static final String PREF_LOCAL_URL = "local_url";
     private static final String PREF_LOCAL_MODEL = "local_model";
+    private static final String PREF_LOCAL_MODEL_FILE_PATH = "local_model_file_path";
 
     public static final String PROVIDER_GEMINI = "gemini";
-    public static final String PROVIDER_LOCAL = "local";
+    public static final String PROVIDER_LOCAL_SERVER = "local_server";
+    public static final String PROVIDER_LOCAL_FILE = "local_file";
     private static final String DEFAULT_LOCAL_URL = "http://127.0.0.1:11434";
 
     private static final String MODEL = "gemini-3.6-flash";
@@ -83,6 +85,7 @@ public class LunaBrain {
     private final Context appContext;
     private final SharedPreferences prefs;
     private final GraphStore store;
+    private LocalLlm localLlm;
 
     public LunaBrain(Context context) {
         this.appContext = context.getApplicationContext();
@@ -91,6 +94,13 @@ public class LunaBrain {
     }
 
     public GraphStore getStore() { return store; }
+
+    /** Lazy - the underlying inference engine is a process-wide singleton either way, but no
+     *  need to touch the vendored llama.cpp bridge at all unless local-file mode is used. */
+    private LocalLlm getLocalLlm() {
+        if (localLlm == null) localLlm = new LocalLlm(appContext);
+        return localLlm;
+    }
 
     public String getApiKey() { return prefs.getString(PREF_API_KEY, ""); }
     public void setApiKey(String key) { prefs.edit().putString(PREF_API_KEY, key).apply(); }
@@ -105,7 +115,8 @@ public class LunaBrain {
 
     public String getProvider() { return prefs.getString(PREF_PROVIDER, PROVIDER_GEMINI); }
     public void setProvider(String provider) { prefs.edit().putString(PREF_PROVIDER, provider).apply(); }
-    public boolean isLocalProvider() { return PROVIDER_LOCAL.equals(getProvider()); }
+    public boolean isLocalServerProvider() { return PROVIDER_LOCAL_SERVER.equals(getProvider()); }
+    public boolean isLocalFileProvider() { return PROVIDER_LOCAL_FILE.equals(getProvider()); }
 
     public String getLocalUrl() { return prefs.getString(PREF_LOCAL_URL, DEFAULT_LOCAL_URL); }
     public void setLocalUrl(String url) { prefs.edit().putString(PREF_LOCAL_URL, url).apply(); }
@@ -113,15 +124,21 @@ public class LunaBrain {
     public String getLocalModel() { return prefs.getString(PREF_LOCAL_MODEL, ""); }
     public void setLocalModel(String model) { prefs.edit().putString(PREF_LOCAL_MODEL, model).apply(); }
 
-    /** True once there's enough set up to actually talk to Luna - a key for cloud, a model name for local. */
+    /** Absolute path to the GGUF file copied into app-private storage by the file picker. */
+    public String getLocalModelFilePath() { return prefs.getString(PREF_LOCAL_MODEL_FILE_PATH, ""); }
+    public void setLocalModelFilePath(String path) { prefs.edit().putString(PREF_LOCAL_MODEL_FILE_PATH, path).apply(); }
+
+    /** True once there's enough set up to actually talk to Luna, for whichever provider is chosen. */
     public boolean isConfigured() {
-        return isLocalProvider() ? !getLocalModel().trim().isEmpty() : !getApiKey().isEmpty();
+        if (isLocalServerProvider()) return !getLocalModel().trim().isEmpty();
+        if (isLocalFileProvider()) return !getLocalModelFilePath().trim().isEmpty();
+        return !getApiKey().isEmpty();
     }
 
     public String configurationHint() {
-        return isLocalProvider()
-                ? "Set a local model name first, in Luna's settings."
-                : "Add your Gemini API key first, in Luna's settings.";
+        if (isLocalServerProvider()) return "Set a local model name first, in Luna's settings.";
+        if (isLocalFileProvider()) return "Choose a local model file first, in Luna's settings.";
+        return "Add your Gemini API key first, in Luna's settings.";
     }
 
     // ---------- ask (grounded Q&A + phone-control tool loop) ----------
@@ -132,8 +149,12 @@ public class LunaBrain {
             return;
         }
 
-        if (isLocalProvider()) {
-            askLocal(question, listener);
+        if (isLocalServerProvider()) {
+            askLocalServer(question, listener);
+            return;
+        }
+        if (isLocalFileProvider()) {
+            askLocalFile(question, listener);
             return;
         }
 
@@ -202,18 +223,37 @@ public class LunaBrain {
         }
     }
 
+    private static final String LOCAL_TOOLS_NOTE =
+            "\n\n(Screen-control tools aren't available with a local model right now - just answer the question.)";
+
     /** Local models don't get the phone-control tools - no reliable forced/parallel function
      *  calling to lean on, so this is grounded Q&A only, same as the "ask" bar on the web demo. */
-    private void askLocal(String question, Listener listener) {
+    private void askLocalServer(String question, Listener listener) {
         try {
-            String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() +
-                    "\n\n(Screen-control tools aren't available with a local model right now - just answer the question.)";
+            String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + LOCAL_TOOLS_NOTE;
             String reply = callLocalChat(systemPrompt, question);
             if (reply == null || reply.trim().isEmpty()) reply = "(no reply)";
             store.logActivity("ask", "Q: " + question + "\nA: " + reply);
             listener.onReply(reply);
         } catch (Exception e) {
-            store.logActivity("system", "Error asking Luna (local model): " + e.getMessage());
+            store.logActivity("system", "Error asking Luna (local server model): " + e.getMessage());
+            listener.onError("Error asking Luna: " + e.getMessage());
+        }
+    }
+
+    /** Same as {@link #askLocalServer}, but running the model on-device via the vendored
+     *  llama.cpp bridge ({@link LocalLlm}) instead of talking to a server over HTTP. */
+    private void askLocalFile(String question, Listener listener) {
+        try {
+            LocalLlm llm = getLocalLlm();
+            llm.loadModelIfNeeded(getLocalModelFilePath());
+            String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + LOCAL_TOOLS_NOTE;
+            String reply = llm.generate(systemPrompt, question);
+            if (reply == null || reply.trim().isEmpty()) reply = "(no reply)";
+            store.logActivity("ask", "Q: " + question + "\nA: " + reply);
+            listener.onReply(reply);
+        } catch (Exception e) {
+            store.logActivity("system", "Error asking Luna (on-device model): " + e.getMessage());
             listener.onError("Error asking Luna: " + e.getMessage());
         }
     }
@@ -242,8 +282,24 @@ public class LunaBrain {
             return;
         }
 
-        if (isLocalProvider()) {
-            captureLocal(text, listener);
+        if (isLocalServerProvider()) {
+            try {
+                String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
+                applyExtractedArgs(extractJsonObject(callLocalChat(null, prompt)), listener);
+            } catch (Exception e) {
+                listener.onError("Error capturing (local server model): " + e.getMessage());
+            }
+            return;
+        }
+        if (isLocalFileProvider()) {
+            try {
+                LocalLlm llm = getLocalLlm();
+                llm.loadModelIfNeeded(getLocalModelFilePath());
+                String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
+                applyExtractedArgs(extractJsonObject(llm.generate(null, prompt)), listener);
+            } catch (Exception e) {
+                listener.onError("Error capturing (on-device model): " + e.getMessage());
+            }
             return;
         }
 
@@ -270,41 +326,21 @@ public class LunaBrain {
                     }
                 }
             }
-
-            if (args == null || !args.has("entities") || args.getJSONArray("entities").length() == 0) {
-                store.logActivity("capture", "Captured a note — no new entities found.");
-                listener.onResult(0, 0);
-                return;
-            }
-
-            int[] counts = store.mergeExtraction(args);
-            store.logActivity("capture", "Captured a note → +" + counts[0] + " entities, +" + counts[1] + " links.");
-            listener.onResult(counts[0], counts[1]);
+            applyExtractedArgs(args, listener);
         } catch (Exception e) {
             listener.onError("Error capturing: " + e.getMessage());
         }
     }
 
-    /** Local models don't reliably support forced function calling, so this asks the model to
-     *  reply with plain JSON in the prompt and parses that instead of using the tools API. */
-    private void captureLocal(String text, CaptureListener listener) {
-        try {
-            String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
-            String raw = callLocalChat(null, prompt);
-            JSONObject args = extractJsonObject(raw);
-
-            if (args == null || !args.has("entities") || args.getJSONArray("entities").length() == 0) {
-                store.logActivity("capture", "Captured a note — no new entities found.");
-                listener.onResult(0, 0);
-                return;
-            }
-
-            int[] counts = store.mergeExtraction(args);
-            store.logActivity("capture", "Captured a note → +" + counts[0] + " entities, +" + counts[1] + " links.");
-            listener.onResult(counts[0], counts[1]);
-        } catch (Exception e) {
-            listener.onError("Error capturing (local model): " + e.getMessage());
+    private void applyExtractedArgs(JSONObject args, CaptureListener listener) throws Exception {
+        if (args == null || !args.has("entities") || args.getJSONArray("entities").length() == 0) {
+            store.logActivity("capture", "Captured a note — no new entities found.");
+            listener.onResult(0, 0);
+            return;
         }
+        int[] counts = store.mergeExtraction(args);
+        store.logActivity("capture", "Captured a note → +" + counts[0] + " entities, +" + counts[1] + " links.");
+        listener.onResult(counts[0], counts[1]);
     }
 
     /** Pulls a JSON object out of a local model's reply, tolerating markdown fences or stray prose. */

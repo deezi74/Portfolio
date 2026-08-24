@@ -7,8 +7,10 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
@@ -29,6 +31,11 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -48,11 +55,17 @@ public class MainActivity extends Activity {
     private static final int REQ_SPEECH_INPUT = 200;
     private static final int REQ_RECORD_AUDIO_FOR_ALWAYS_ON = 101;
     private static final int REQ_NOTIFICATIONS = 102;
+    private static final int REQ_PICK_MODEL_FILE = 103;
 
     private GraphView graphView;
     private TextView knowledgeSub, physicsLabel, systemsLabel, orbLabel;
     private EditText askInput;
     private ImageButton micButton, orbButton;
+
+    // Set while the settings dialog is open, so copyModelFile() (called from onActivityResult,
+    // after the file picker returns) can update it live - the dialog survives the picker
+    // activity being launched on top, it just gets obscured and reappears.
+    private TextView localFileStatusText;
 
     private TextToSpeech tts;
     private LunaBrain brain;
@@ -195,6 +208,9 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_SPEECH_INPUT && resultCode == RESULT_OK && data != null) {
             ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
             if (results != null && !results.isEmpty()) sendAsk(results.get(0));
+        } else if (requestCode == REQ_PICK_MODEL_FILE && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) copyModelFile(uri);
         }
     }
 
@@ -367,6 +383,86 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ---------- local model file picker ----------
+
+    private void pickModelFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        // GGUF has no registered MIME type, so this has to accept anything and let the
+        // user pick the right file themselves.
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_PICK_MODEL_FILE);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker available on this device", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * Copies the picked file into app-private storage so llama.cpp has a real filesystem path
+     * to open (a content:// Uri from the system picker isn't one, and isn't guaranteed to stay
+     * valid across app restarts). Runs off the main thread - model files can be several GB.
+     */
+    private void copyModelFile(Uri uri) {
+        String displayName = queryDisplayName(uri);
+        String targetName = (displayName != null && !displayName.trim().isEmpty())
+                ? displayName
+                : "model_" + System.currentTimeMillis() + ".gguf";
+
+        if (localFileStatusText != null) {
+            localFileStatusText.setText("Copying " + targetName + "... this can take a while for large files.");
+        }
+
+        new Thread(() -> {
+            try {
+                File modelsDir = new File(getFilesDir(), "models");
+                if (!modelsDir.exists() && !modelsDir.mkdirs()) {
+                    throw new IOException("Couldn't create storage for model files.");
+                }
+                File outFile = new File(modelsDir, targetName);
+
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(outFile)) {
+                    if (in == null) throw new IOException("Couldn't open the selected file.");
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                }
+
+                brain.setLocalModelFilePath(outFile.getAbsolutePath());
+                runOnUiThread(() -> {
+                    if (localFileStatusText != null) {
+                        localFileStatusText.setText("Ready: " + outFile.getName() + " (" + formatSize(outFile.length()) + ")");
+                    }
+                    systemsLabel.setText(brain.isConfigured() ? "All systems connected" : brain.configurationHint());
+                    Toast.makeText(this, "Model file ready.", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (localFileStatusText != null) localFileStatusText.setText("Error: " + e.getMessage());
+                    Toast.makeText(this, "Couldn't copy model file: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) return cursor.getString(idx);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private String formatSize(long bytes) {
+        if (bytes >= 1024L * 1024 * 1024) return String.format(Locale.US, "%.1f GB", bytes / (1024.0 * 1024 * 1024));
+        if (bytes >= 1024L * 1024) return String.format(Locale.US, "%.0f MB", bytes / (1024.0 * 1024));
+        return bytes + " B";
+    }
+
     // ---------- settings ----------
 
     private void showSettingsDialog() {
@@ -389,12 +485,20 @@ public class MainActivity extends Activity {
         cloudRadio.setText("Cloud (Gemini) — needs a free API key");
         providerGroup.addView(cloudRadio);
 
-        RadioButton localRadio = new RadioButton(this);
-        localRadio.setId(View.generateViewId());
-        localRadio.setText("Local model on this device — no API key");
-        providerGroup.addView(localRadio);
+        RadioButton localServerRadio = new RadioButton(this);
+        localServerRadio.setId(View.generateViewId());
+        localServerRadio.setText("Local server on this device — no API key");
+        providerGroup.addView(localServerRadio);
 
-        providerGroup.check(brain.isLocalProvider() ? localRadio.getId() : cloudRadio.getId());
+        RadioButton localFileRadio = new RadioButton(this);
+        localFileRadio.setId(View.generateViewId());
+        localFileRadio.setText("Local model file, on-device — no API key");
+        providerGroup.addView(localFileRadio);
+
+        int checkedId = cloudRadio.getId();
+        if (brain.isLocalServerProvider()) checkedId = localServerRadio.getId();
+        else if (brain.isLocalFileProvider()) checkedId = localFileRadio.getId();
+        providerGroup.check(checkedId);
         providerGroup.setPadding(0, 0, 0, dp(8));
         layout.addView(providerGroup);
 
@@ -415,38 +519,69 @@ public class MainActivity extends Activity {
         cloudSection.addView(keyHelp);
         layout.addView(cloudSection);
 
-        // ---- local model fields ----
-        LinearLayout localSection = new LinearLayout(this);
-        localSection.setOrientation(LinearLayout.VERTICAL);
+        // ---- local server fields (e.g. Ollama) ----
+        LinearLayout localServerSection = new LinearLayout(this);
+        localServerSection.setOrientation(LinearLayout.VERTICAL);
 
         EditText localUrlInput = new EditText(this);
         localUrlInput.setHint("Server URL");
         localUrlInput.setText(brain.getLocalUrl());
-        localSection.addView(localUrlInput);
+        localServerSection.addView(localUrlInput);
 
         EditText localModelInput = new EditText(this);
         localModelInput.setHint("Model name (e.g. llama3.2:3b)");
         localModelInput.setText(brain.getLocalModel());
         localModelInput.setPadding(0, dp(6), 0, 0);
-        localSection.addView(localModelInput);
+        localServerSection.addView(localModelInput);
 
-        TextView localHelp = new TextView(this);
-        localHelp.setText("Talks to an Ollama-compatible server already running with a model you've " +
+        TextView localServerHelp = new TextView(this);
+        localServerHelp.setText("Talks to an Ollama-compatible server already running with a model you've " +
                 "pulled - on this phone (e.g. via Termux) or another device on your network. Nothing " +
-                "leaves your network, no key needed. Screen-control tools aren't available in local " +
-                "mode yet - just Q&A and knowledge capture.");
-        localHelp.setTextSize(12);
-        localHelp.setPadding(0, 4, 0, pad);
-        localSection.addView(localHelp);
-        layout.addView(localSection);
+                "leaves your network, no key needed.");
+        localServerHelp.setTextSize(12);
+        localServerHelp.setPadding(0, 4, 0, pad);
+        localServerSection.addView(localServerHelp);
+        layout.addView(localServerSection);
 
+        // ---- local file fields (on-device GGUF via the vendored llama.cpp bridge) ----
+        LinearLayout localFileSection = new LinearLayout(this);
+        localFileSection.setOrientation(LinearLayout.VERTICAL);
+
+        localFileStatusText = new TextView(this);
+        String existingPath = brain.getLocalModelFilePath();
+        localFileStatusText.setText(existingPath.isEmpty()
+                ? "No file chosen yet."
+                : "Current: " + new File(existingPath).getName());
+        localFileStatusText.setPadding(0, 0, 0, dp(6));
+        localFileSection.addView(localFileStatusText);
+
+        Button chooseFileButton = new Button(this);
+        chooseFileButton.setText("Choose model file (.gguf)...");
+        chooseFileButton.setOnClickListener(v -> pickModelFile());
+        localFileSection.addView(chooseFileButton);
+
+        TextView localFileHelp = new TextView(this);
+        localFileHelp.setText("Runs a .gguf file you've already downloaded directly on this device, no " +
+                "server, no key. The file is copied into Luna's private storage the first time, which " +
+                "can take a while for a large model. Screen-control tools aren't available in either " +
+                "local mode yet - just Q&A and knowledge capture.");
+        localFileHelp.setTextSize(12);
+        localFileHelp.setPadding(0, 4, 0, pad);
+        localFileSection.addView(localFileHelp);
+        layout.addView(localFileSection);
+
+        RadioButton finalLocalServerRadio = localServerRadio;
+        RadioButton finalLocalFileRadio = localFileRadio;
         Runnable updateProviderSections = () -> {
-            boolean local = providerGroup.getCheckedRadioButtonId() == localRadio.getId();
-            cloudSection.setVisibility(local ? View.GONE : View.VISIBLE);
-            localSection.setVisibility(local ? View.VISIBLE : View.GONE);
+            int checked = providerGroup.getCheckedRadioButtonId();
+            boolean isLocalServer = checked == finalLocalServerRadio.getId();
+            boolean isLocalFile = checked == finalLocalFileRadio.getId();
+            cloudSection.setVisibility(isLocalServer || isLocalFile ? View.GONE : View.VISIBLE);
+            localServerSection.setVisibility(isLocalServer ? View.VISIBLE : View.GONE);
+            localFileSection.setVisibility(isLocalFile ? View.VISIBLE : View.GONE);
         };
         updateProviderSections.run();
-        providerGroup.setOnCheckedChangeListener((group, checkedId) -> updateProviderSections.run());
+        providerGroup.setOnCheckedChangeListener((group, id) -> updateProviderSections.run());
 
         Switch alwaysListenSwitch = new Switch(this);
         alwaysListenSwitch.setText("Always listen for “Luna”");
@@ -505,8 +640,13 @@ public class MainActivity extends Activity {
                     brain.setApiKey(key);
                     brain.setLocalUrl(localUrlInput.getText().toString().trim());
                     brain.setLocalModel(localModelInput.getText().toString().trim());
-                    brain.setProvider(providerGroup.getCheckedRadioButtonId() == localRadio.getId()
-                            ? LunaBrain.PROVIDER_LOCAL : LunaBrain.PROVIDER_GEMINI);
+
+                    int checkedNow = providerGroup.getCheckedRadioButtonId();
+                    String provider = LunaBrain.PROVIDER_GEMINI;
+                    if (checkedNow == finalLocalServerRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_SERVER;
+                    else if (checkedNow == finalLocalFileRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_FILE;
+                    brain.setProvider(provider);
+
                     brain.setMuted(muteSwitch.isChecked());
                     systemsLabel.setText(brain.isConfigured() ? "All systems connected" : brain.configurationHint());
 
@@ -516,6 +656,7 @@ public class MainActivity extends Activity {
                     else LunaWakeWordService.stop(this);
                 })
                 .setNegativeButton("Cancel", null)
+                .setOnDismissListener(d -> localFileStatusText = null)
                 .show();
     }
 

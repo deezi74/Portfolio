@@ -7,6 +7,11 @@ build/
 *.apk
 *.aab
 
+# Native build intermediates - this is also where CMake's FetchContent
+# clones llama.cpp's source to compile against (see cpp/CMakeLists.txt) -
+# never commit that, it's ~170MB and gets re-fetched on demand.
+.cxx/
+
 # Android Studio
 .idea/
 *.iml
