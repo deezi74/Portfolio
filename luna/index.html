@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Luna - AI Phone Assistant | Ronnie Lynch</title>
+  <meta name="description" content="Luna, a voice + chat AI phone assistant demo built by Ronnie Lynch." />
+  <link rel="stylesheet" href="luna.css"/>
+</head>
+<body>
+  <header class="luna-header">
+    <a href="../index.html" class="back-link">&larr; Back to portfolio</a>
+    <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
+  </header>
+
+  <main class="luna-shell">
+    <div class="orb-wrap">
+      <div id="orb" class="orb"></div>
+      <h1 class="glow luna-title">LUNA</h1>
+      <p id="statusLine" class="status-line">Tap the mic and say something, or type below</p>
+    </div>
+
+    <div id="chatLog" class="chat-log" aria-live="polite"></div>
+
+    <form id="chatForm" class="input-bar">
+      <button type="button" id="micBtn" class="icon-btn mic-btn" title="Voice input" aria-label="Voice input">&#127908;</button>
+      <input id="chatInput" type="text" autocomplete="off" placeholder="Ask Luna anything..." />
+      <button type="button" id="muteBtn" class="icon-btn" title="Mute Luna's voice" aria-label="Mute voice">&#128264;</button>
+      <button type="submit" class="send-btn">Send</button>
+    </form>
+  </main>
+
+  <div id="settingsOverlay" class="overlay hidden">
+    <div class="settings-panel">
+      <div class="settings-head">
+        <h2>Settings</h2>
+        <button id="closeSettings" class="icon-btn" aria-label="Close settings">&times;</button>
+      </div>
+      <p class="settings-copy">
+        Luna is powered by the Google Gemini API. Paste your own free API key below to chat &mdash;
+        it's saved <strong>only in your browser</strong> (localStorage) and is never sent anywhere
+        except directly to Google's API.
+      </p>
+      <label for="apiKeyInput">Gemini API key</label>
+      <input id="apiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+      <div class="settings-actions">
+        <button id="saveKeyBtn" class="resume-btn">Save key</button>
+        <button id="clearKeyBtn" class="resume-btn view">Clear key</button>
+      </div>
+      <a class="get-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+        Get a free Gemini API key &nearr;
+      </a>
+      <p class="settings-note">Voice input needs Chrome/Edge (Web Speech API). Everything else works in any modern browser.</p>
+    </div>
+  </div>
+
+  <script src="luna.js"></script>
+</body>
+</html>
