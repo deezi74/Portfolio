@@ -1,14 +1,15 @@
 package com.ronnielynch.luna;
 
 import android.Manifest;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
+import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.text.InputType;
@@ -16,52 +17,42 @@ import android.text.method.ScrollingMovementMethod;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Scanner;
 
 /**
- * Luna - a simple voice + text AI phone assistant backed by the Gemini API.
- *
- * The API key is never hardcoded: it's entered by the user via the settings
- * (gear) button and stored in a private SharedPreferences file on-device.
+ * Luna - voice + text AI phone assistant. This class is just the chat UI; the
+ * actual chat/tool-calling logic lives in {@link LunaBrain} so the
+ * always-listening background service can drive it too.
  */
 public class MainActivity extends Activity {
 
-    private static final String PREFS_NAME = "luna_prefs";
-    private static final String PREF_API_KEY = "gemini_api_key";
-    private static final String MODEL = "gemini-2.0-flash";
-    private static final String SYSTEM_PROMPT =
-            "You are Luna, a warm, concise AI phone assistant. Keep answers short " +
-            "and conversational, the way you'd speak on a phone call, unless the " +
-            "user asks for detail.";
     private static final int REQ_RECORD_AUDIO = 100;
     private static final int REQ_SPEECH_INPUT = 200;
+    private static final int REQ_RECORD_AUDIO_FOR_ALWAYS_ON = 101;
+    private static final int REQ_NOTIFICATIONS = 102;
 
     private TextView chatText;
     private TextView statusText;
     private ScrollView scrollView;
     private EditText inputBox;
-    private ImageButton micButton;
     private TextToSpeech tts;
-    private SharedPreferences prefs;
+    private LunaBrain brain;
     private final StringBuilder chatLog = new StringBuilder();
-    private final List<JSONObject> history = new ArrayList<>();
     private boolean busy = false;
 
     @Override
@@ -74,32 +65,51 @@ public class MainActivity extends Activity {
 
         setContentView(R.layout.activity_main);
 
-        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        brain = new LunaBrain(this);
 
         chatText = findViewById(R.id.chatText);
         chatText.setMovementMethod(new ScrollingMovementMethod());
         statusText = findViewById(R.id.statusText);
         scrollView = findViewById(R.id.scrollView);
         inputBox = findViewById(R.id.inputBox);
-        micButton = findViewById(R.id.micButton);
+        ImageButton micButton = findViewById(R.id.micButton);
         Button sendButton = findViewById(R.id.sendButton);
         ImageButton settingsButton = findViewById(R.id.settingsButton);
 
         tts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                tts.setLanguage(Locale.US);
-            }
+            if (status == TextToSpeech.SUCCESS) tts.setLanguage(Locale.US);
         });
 
         sendButton.setOnClickListener(v -> sendCurrentInput());
         micButton.setOnClickListener(v -> startVoiceInput());
         settingsButton.setOnClickListener(v -> showSettingsDialog());
 
-        if (getApiKey().isEmpty()) {
+        restoreHistory();
+        if (brain.getApiKey().isEmpty()) {
             appendChat("Luna: Add your Gemini API key (gear icon, top right) to start chatting.");
             showSettingsDialog();
-        } else {
-            appendChat("Luna: Hi, I'm Luna. Ask me anything, out loud or by typing.");
+        }
+
+        if (brain.isAlwaysListening()) {
+            ensureAlwaysListeningRunning();
+        }
+    }
+
+    // ---------- restoring history ----------
+
+    private void restoreHistory() {
+        JSONArray display = brain.getDisplayableHistory();
+        for (int i = 0; i < display.length(); i++) {
+            try {
+                JSONObject turn = display.getJSONObject(i);
+                String role = turn.getString("role");
+                String text = turn.getString("text");
+                appendChat(("user".equals(role) ? "You: " : "Luna: ") + text);
+            } catch (Exception ignored) {
+            }
+        }
+        if (display.length() > 0) {
+            appendChat("— restored from your last conversation —");
         }
     }
 
@@ -114,8 +124,7 @@ public class MainActivity extends Activity {
 
     private void startVoiceInput() {
         if (busy) return;
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
             return;
         }
@@ -124,8 +133,7 @@ public class MainActivity extends Activity {
 
     private void launchSpeechRecognizer() {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Luna...");
         try {
             startActivityForResult(intent, REQ_SPEECH_INPUT);
@@ -137,10 +145,18 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_RECORD_AUDIO
-                && grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+        if (requestCode == REQ_RECORD_AUDIO && granted) {
             launchSpeechRecognizer();
+        } else if (requestCode == REQ_RECORD_AUDIO_FOR_ALWAYS_ON) {
+            if (granted) {
+                requestNotificationsThenStartAlwaysListening();
+            } else {
+                Toast.makeText(this, "Always-listening needs microphone access.", Toast.LENGTH_SHORT).show();
+            }
+        } else if (requestCode == REQ_NOTIFICATIONS) {
+            ensureAlwaysListeningRunning();
         }
     }
 
@@ -157,129 +173,162 @@ public class MainActivity extends Activity {
 
     // ---------- settings ----------
 
-    private String getApiKey() {
-        return prefs.getString(PREF_API_KEY, "");
-    }
-
     private void showSettingsDialog() {
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad, pad, pad);
+
         EditText keyInput = new EditText(this);
         keyInput.setHint("Gemini API key (AIza...)");
         keyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        keyInput.setText(getApiKey());
+        keyInput.setText(brain.getApiKey());
+        layout.addView(keyInput);
+
+        TextView keyHelp = new TextView(this);
+        keyHelp.setText("Stored only on this device. Get one at aistudio.google.com/apikey");
+        keyHelp.setTextSize(12);
+        keyHelp.setPadding(0, 4, 0, pad);
+        layout.addView(keyHelp);
+
+        Switch alwaysListenSwitch = new Switch(this);
+        alwaysListenSwitch.setText("Always listen for “Luna”");
+        alwaysListenSwitch.setChecked(brain.isAlwaysListening());
+        layout.addView(alwaysListenSwitch);
+
+        TextView alwaysHelp = new TextView(this);
+        alwaysHelp.setText("Keeps the mic listening in the background, with an always-on notification while it's active. Uses more battery.");
+        alwaysHelp.setTextSize(12);
+        alwaysHelp.setPadding(0, 4, 0, pad);
+        layout.addView(alwaysHelp);
+
+        Switch muteSwitch = new Switch(this);
+        muteSwitch.setText("Mute Luna's voice");
+        muteSwitch.setChecked(brain.isMuted());
+        muteSwitch.setPadding(0, 0, 0, pad);
+        layout.addView(muteSwitch);
+
+        Button screenControlButton = new Button(this);
+        screenControlButton.setText(isAccessibilityServiceEnabled()
+                ? "Screen control: ON (tap to manage)"
+                : "Enable screen control...");
+        screenControlButton.setOnClickListener(v -> openAccessibilitySettings());
+        layout.addView(screenControlButton);
+
+        TextView screenHelp = new TextView(this);
+        screenHelp.setText("Lets Luna tap, type, and scroll for you (e.g. “go to YouTube and search cat videos”). Turned on manually in Android's Accessibility settings, for your safety.");
+        screenHelp.setTextSize(12);
+        screenHelp.setPadding(0, 4, 0, pad);
+        layout.addView(screenHelp);
+
+        Button clearHistoryButton = new Button(this);
+        clearHistoryButton.setText("Clear chat history");
+        clearHistoryButton.setOnClickListener(v -> {
+            brain.clearHistory();
+            chatLog.setLength(0);
+            chatText.setText("");
+            Toast.makeText(this, "Chat history cleared", Toast.LENGTH_SHORT).show();
+        });
+        layout.addView(clearHistoryButton);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
 
         new AlertDialog.Builder(this)
                 .setTitle("Luna settings")
-                .setMessage("Paste your free Gemini API key. It's stored only on this device.\n\n" +
-                        "Get one at aistudio.google.com/apikey")
-                .setView(keyInput)
+                .setView(scroll)
                 .setPositiveButton("Save", (dialog, which) -> {
                     String key = keyInput.getText().toString().trim();
-                    prefs.edit().putString(PREF_API_KEY, key).apply();
-                    if (!key.isEmpty()) {
-                        appendChat("Luna: API key saved.");
+                    brain.setApiKey(key);
+                    brain.setMuted(muteSwitch.isChecked());
+
+                    boolean wantsAlwaysListening = alwaysListenSwitch.isChecked();
+                    brain.setAlwaysListening(wantsAlwaysListening);
+                    if (wantsAlwaysListening) {
+                        requestRecordAudioThenStartAlwaysListening();
+                    } else {
+                        LunaWakeWordService.stop(this);
                     }
+
+                    if (!key.isEmpty()) appendChat("Luna: Settings saved.");
                 })
-                .setNegativeButton("Clear key", (dialog, which) -> {
-                    prefs.edit().remove(PREF_API_KEY).apply();
-                    appendChat("Luna: API key cleared.");
-                })
-                .setNeutralButton("Cancel", null)
+                .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    // ---------- Gemini call ----------
+    private void requestRecordAudioThenStartAlwaysListening() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO_FOR_ALWAYS_ON);
+        } else {
+            requestNotificationsThenStartAlwaysListening();
+        }
+    }
+
+    private void requestNotificationsThenStartAlwaysListening() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
+        } else {
+            ensureAlwaysListeningRunning();
+        }
+    }
+
+    private void ensureAlwaysListeningRunning() {
+        LunaWakeWordService.start(this);
+    }
+
+    private boolean isAccessibilityServiceEnabled() {
+        AccessibilityManager am = (AccessibilityManager) getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (am == null) return false;
+        List<AccessibilityServiceInfo> enabled =
+                am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
+        for (AccessibilityServiceInfo info : enabled) {
+            if (getPackageName().equals(info.getResolveInfo().serviceInfo.packageName)) return true;
+        }
+        return false;
+    }
+
+    private void openAccessibilitySettings() {
+        Toast.makeText(this, "Find “Luna” in the list and turn it on", Toast.LENGTH_LONG).show();
+        startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+    }
+
+    // ---------- talking to Luna ----------
 
     private void sendToLuna(String userMessage) {
-        String apiKey = getApiKey();
-        if (apiKey.isEmpty()) {
+        if (brain.getApiKey().isEmpty()) {
             appendChat("Luna: Add your Gemini API key first (gear icon, top right).");
             showSettingsDialog();
             return;
         }
 
         appendChat("You: " + userMessage);
-        addToHistory("user", userMessage);
         setBusy(true, "Thinking...");
 
-        new Thread(() -> callGeminiApi(apiKey)).start();
-    }
-
-    private void addToHistory(String role, String text) {
-        try {
-            JSONObject part = new JSONObject().put("text", text);
-            JSONObject turn = new JSONObject()
-                    .put("role", role)
-                    .put("parts", new JSONArray().put(part));
-            history.add(turn);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void callGeminiApi(String apiKey) {
-        try {
-            JSONObject requestBody = new JSONObject();
-            requestBody.put("system_instruction",
-                    new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", SYSTEM_PROMPT))));
-
-            JSONArray contentsArray = new JSONArray();
-            for (JSONObject turn : history) contentsArray.put(turn);
-            requestBody.put("contents", contentsArray);
-
-            String apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/"
-                    + MODEL + ":generateContent?key=" + apiKey;
-
-            URL url = new URL(apiUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(requestBody.toString().getBytes(StandardCharsets.UTF_8));
+        new Thread(() -> brain.processUserMessage(userMessage, new LunaBrain.Listener() {
+            @Override
+            public void onToolStep(String description) {
+                runOnUiThread(() -> setBusy(true, description));
             }
 
-            int responseCode = conn.getResponseCode();
-            Scanner scanner = new Scanner(
-                    responseCode == 200 ? conn.getInputStream() : conn.getErrorStream(),
-                    "UTF-8");
-            StringBuilder responseBuilder = new StringBuilder();
-            while (scanner.hasNextLine()) {
-                responseBuilder.append(scanner.nextLine());
-            }
-            scanner.close();
-
-            if (responseCode != 200) {
-                history.remove(history.size() - 1);
-                postToUi("Luna: API error (" + responseCode + ") - " + responseBuilder, null);
-                return;
+            @Override
+            public void onReply(String text) {
+                runOnUiThread(() -> {
+                    appendChat("Luna: " + text);
+                    setBusy(false, "Tap the mic and say ‘Luna’, or type below");
+                    speak(text);
+                });
             }
 
-            JSONObject responseJson = new JSONObject(responseBuilder.toString());
-            String replyText = responseJson
-                    .getJSONArray("candidates")
-                    .getJSONObject(0)
-                    .getJSONObject("content")
-                    .getJSONArray("parts")
-                    .getJSONObject(0)
-                    .getString("text");
-
-            addToHistory("model", replyText);
-            postToUi("Luna: " + replyText, replyText);
-
-        } catch (Exception e) {
-            if (!history.isEmpty()) history.remove(history.size() - 1);
-            postToUi("Luna: Error - " + e.getMessage(), null);
-        }
-    }
-
-    private void postToUi(String chatLine, String speakText) {
-        new Handler(Looper.getMainLooper()).post(() -> {
-            appendChat(chatLine);
-            setBusy(false, "Tap the mic and say ‘Luna’, or type below");
-            if (speakText != null) speak(speakText);
-        });
+            @Override
+            public void onError(String text) {
+                runOnUiThread(() -> {
+                    appendChat("Luna: " + text);
+                    setBusy(false, "Tap the mic and say ‘Luna’, or type below");
+                });
+            }
+        })).start();
     }
 
     // ---------- UI helpers ----------
@@ -296,7 +345,7 @@ public class MainActivity extends Activity {
     }
 
     private void speak(String text) {
-        if (tts != null) {
+        if (tts != null && !brain.isMuted()) {
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "luna_reply");
         }
     }

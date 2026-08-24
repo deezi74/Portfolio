@@ -50,7 +50,26 @@
       <a class="get-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
         Get a free Gemini API key &nearr;
       </a>
-      <p class="settings-note">Voice input needs Chrome/Edge (Web Speech API). Everything else works in any modern browser.</p>
+
+      <div class="settings-toggle">
+        <label class="switch">
+          <input type="checkbox" id="alwaysListenToggle" />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div class="toggle-label">Always listen for &ldquo;Luna&rdquo;</div>
+          <div class="toggle-help">Keeps the mic on while this tab is open and says the wake word triggers a message &mdash; browsers can't listen in the background.</div>
+        </div>
+      </div>
+
+      <button id="clearHistoryBtn" class="resume-btn view full-width">Clear chat history</button>
+
+      <p class="settings-note">
+        Voice input needs Chrome/Edge (Web Speech API). Chat history is saved only in this browser
+        (localStorage) so it's here next time you visit. A website can't open apps or tap around
+        your phone for you &mdash; that part of Luna lives in the
+        <a href="https://github.com/deezi74/Portfolio/tree/main/luna-android" target="_blank" rel="noopener">native Android app</a>.
+      </p>
     </div>
   </div>
 

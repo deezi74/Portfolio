@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">Luna</string>
+    <string name="accessibility_service_description">Lets Luna see what\'s on screen and tap, type, and scroll for you when you ask her to. Only active while you have Screen control turned on.</string>
 </resources>
