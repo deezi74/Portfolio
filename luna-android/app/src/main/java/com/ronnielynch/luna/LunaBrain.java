@@ -28,6 +28,7 @@ public class LunaBrain {
     private static final String PREF_API_KEY = "gemini_api_key";
     private static final String PREF_MUTED = "muted";
     private static final String PREF_ALWAYS_LISTENING = "always_listening";
+    private static final String PREF_BUBBLE_ENABLED = "bubble_enabled";
     private static final String PREF_PROVIDER = "provider";
     private static final String PREF_LOCAL_URL = "local_url";
     private static final String PREF_LOCAL_MODEL = "local_model";
@@ -60,7 +61,13 @@ public class LunaBrain {
             "numbered elements currently on screen, then tap/type_text/scroll/press_key by " +
             "number. Call show_screen again after anything changes - numbers are only valid for " +
             "the most recent show_screen call. If those tools fail because screen control isn't " +
-            "enabled, tell the user to enable it in Luna's settings.";
+            "enabled, tell the user to enable it in Luna's settings.\n\n" +
+            "You also have direct phone tools - prefer these over screen control when they apply: " +
+            "call_contact and send_text for calls/texts by contact name; set_reminder for " +
+            "\"remind me...\" requests; open_bluetooth_panel to let the user turn Bluetooth on/off " +
+            "or pick a device (you can't toggle it directly); set_brightness for screen brightness. " +
+            "For anything else phone-related (WhatsApp, alarms in the Clock app, other apps' " +
+            "own features), fall back to open_app + show_screen + tap/type_text.";
 
     private static final String EXTRACT_SYSTEM_PROMPT =
             "You are Luna's knowledge-extraction engine. Given a piece of text a user captured " +
@@ -113,6 +120,9 @@ public class LunaBrain {
 
     public boolean isScreenControlEnabled() { return LunaAccessibilityService.getInstance() != null; }
 
+    public boolean isBubbleEnabled() { return prefs.getBoolean(PREF_BUBBLE_ENABLED, false); }
+    public void setBubbleEnabled(boolean value) { prefs.edit().putBoolean(PREF_BUBBLE_ENABLED, value).apply(); }
+
     public String getProvider() { return prefs.getString(PREF_PROVIDER, PROVIDER_GEMINI); }
     public void setProvider(String provider) { prefs.edit().putString(PREF_PROVIDER, provider).apply(); }
     public boolean isLocalServerProvider() { return PROVIDER_LOCAL_SERVER.equals(getProvider()); }
@@ -159,17 +169,20 @@ public class LunaBrain {
         }
 
         String apiKey = getApiKey();
-        String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + TOOLS_ADDENDUM;
+        String notifSummary = new NotificationStore(appContext).recentSummary(15);
+        String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + TOOLS_ADDENDUM +
+                "\n\nRecent notifications from other apps (if notification access is enabled):\n" + notifSummary;
         JSONArray contents = new JSONArray();
 
         try {
+            JSONArray allTools = mergedToolDeclarations();
             contents.put(userTurn(question));
 
             for (int step = 0; step < MAX_TOOL_STEPS; step++) {
                 JSONObject requestBody = new JSONObject();
                 requestBody.put("system_instruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", systemPrompt))));
                 requestBody.put("contents", contents);
-                requestBody.put("tools", new JSONArray().put(new JSONObject().put("function_declarations", ScreenTools.toolDeclarations())));
+                requestBody.put("tools", new JSONArray().put(new JSONObject().put("function_declarations", allTools)));
 
                 JSONObject responseJson = callGemini(apiKey, requestBody);
                 JSONObject candidate = responseJson.getJSONArray("candidates").getJSONObject(0);
@@ -201,7 +214,9 @@ public class LunaBrain {
                     if (args == null) args = new JSONObject();
 
                     listener.onToolStep(describeStep(name, args));
-                    JSONObject result = ScreenTools.execute(appContext, name, args);
+                    JSONObject result = PhoneTools.handles(name)
+                            ? PhoneTools.execute(appContext, name, args)
+                            : ScreenTools.execute(appContext, name, args);
                     responseParts.put(new JSONObject().put("functionResponse", new JSONObject().put("name", name).put("response", result)));
                 }
                 // Gemini's current API rejects a "function" role for tool results -
@@ -289,6 +304,11 @@ public class LunaBrain {
             case "type_text": return "Typing into [" + args.optInt("number", -1) + "]...";
             case "scroll": return "Scrolling " + args.optString("direction", "") + "...";
             case "press_key": return "Pressing " + args.optString("key", "") + "...";
+            case "call_contact": return "Calling " + args.optString("name", "") + "...";
+            case "send_text": return "Texting " + args.optString("name", "") + "...";
+            case "set_reminder": return "Setting a reminder...";
+            case "open_bluetooth_panel": return "Opening Bluetooth...";
+            case "set_brightness": return "Adjusting brightness...";
             default: return "Working on it...";
         }
     }
@@ -326,11 +346,45 @@ public class LunaBrain {
             return;
         }
 
+        try {
+            JSONArray parts = new JSONArray().put(new JSONObject().put("text", text));
+            runGeminiExtraction(parts, listener);
+        } catch (Exception e) {
+            listener.onError("Error capturing: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Same extraction pipeline as {@link #capture}, but for a photo (a document, whiteboard,
+     * business card, ...) instead of pasted text - only works with the Gemini provider, which
+     * is multimodal; the local providers here don't support images yet.
+     */
+    public void captureImage(byte[] jpegBytes, CaptureListener listener) {
+        if (!PROVIDER_GEMINI.equals(getProvider())) {
+            listener.onError("Photo capture needs the Cloud (Gemini) provider - local models don't support images yet.");
+            return;
+        }
+        if (getApiKey().isEmpty()) {
+            listener.onError(configurationHint());
+            return;
+        }
+        try {
+            String base64 = android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP);
+            JSONArray parts = new JSONArray()
+                    .put(new JSONObject().put("text", "Extract entities from this photo (a document, whiteboard, business card, or similar)."))
+                    .put(new JSONObject().put("inline_data", new JSONObject().put("mime_type", "image/jpeg").put("data", base64)));
+            runGeminiExtraction(parts, listener);
+        } catch (Exception e) {
+            listener.onError("Error capturing photo: " + e.getMessage());
+        }
+    }
+
+    private void runGeminiExtraction(JSONArray userParts, CaptureListener listener) {
         String apiKey = getApiKey();
         try {
             JSONObject requestBody = new JSONObject();
             requestBody.put("system_instruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", EXTRACT_SYSTEM_PROMPT))));
-            requestBody.put("contents", new JSONArray().put(userTurn(text)));
+            requestBody.put("contents", new JSONArray().put(new JSONObject().put("role", "user").put("parts", userParts)));
             requestBody.put("tools", new JSONArray().put(new JSONObject().put("function_declarations", new JSONArray().put(recordEntitiesDeclaration()))));
             requestBody.put("tool_config", new JSONObject().put("function_calling_config", new JSONObject().put("mode", "ANY")));
 
@@ -421,6 +475,15 @@ public class LunaBrain {
     }
 
     // ---------- shared HTTP ----------
+
+    private static JSONArray mergedToolDeclarations() throws Exception {
+        JSONArray merged = new JSONArray();
+        JSONArray screenTools = ScreenTools.toolDeclarations();
+        for (int i = 0; i < screenTools.length(); i++) merged.put(screenTools.getJSONObject(i));
+        JSONArray phoneTools = PhoneTools.toolDeclarations();
+        for (int i = 0; i < phoneTools.length(); i++) merged.put(phoneTools.getJSONObject(i));
+        return merged;
+    }
 
     private static JSONObject userTurn(String text) throws Exception {
         return new JSONObject().put("role", "user").put("parts", new JSONArray().put(new JSONObject().put("text", text)));

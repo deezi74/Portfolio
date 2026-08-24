@@ -7,6 +7,40 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
+    <!-- Reminders & alarms -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Calls, texts & contacts -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!-- Default assistant + floating bubble -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Notification reading -->
+    <!-- android.permission.BIND_NOTIFICATION_LISTENER_SERVICE is a signature/system permission
+         declared on the service below, not requested here - the user grants it explicitly in
+         Settings > Notification access, same special-access pattern as Accessibility. -->
+
+    <!-- Extra permissions, opted into explicitly -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- WRITE_SETTINGS is AppOps-gated, not manifest-gated: a normal app can never actually be
+         granted it via <uses-permission> (lint flags this as a protected/system-only permission
+         for exactly that reason) - the real grant flow is Settings.System.canWrite() +
+         Settings.ACTION_MANAGE_WRITE_SETTINGS, which needs no manifest entry at all. -->
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+
     <!-- Lets Luna find and open apps by name on API 30+ (package visibility). -->
     <queries>
         <intent>
@@ -32,6 +66,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Makes Luna a candidate when the system resolves an assist request (long-press
+                 home / assist gesture on many devices). This is the lightweight, documented
+                 "assist intent target" pattern - not a full VoiceInteractionService, which is a
+                 much bigger, more invasive system component. Whether this actually shows up as
+                 a selectable "Default assist app" varies by device/Android skin. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <service
@@ -50,6 +97,32 @@
             android:name=".LunaWakeWordService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".LunaBubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Floating quick-access bubble for the Luna assistant" />
+        </service>
+
+        <service
+            android:name=".LunaNotificationListenerService"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver android:name=".ReminderReceiver" android:exported="false" />
+
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

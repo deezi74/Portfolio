@@ -4,12 +4,14 @@ import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
@@ -56,6 +58,9 @@ public class MainActivity extends Activity {
     private static final int REQ_RECORD_AUDIO_FOR_ALWAYS_ON = 101;
     private static final int REQ_NOTIFICATIONS = 102;
     private static final int REQ_PICK_MODEL_FILE = 103;
+    private static final int REQ_PHONE_PERMISSIONS = 104;
+    private static final int REQ_BLUETOOTH = 105;
+    private static final int REQ_IMAGE_CAPTURE = 106;
 
     private GraphView graphView;
     private TextView knowledgeSub, physicsLabel, systemsLabel, orbLabel;
@@ -66,6 +71,10 @@ public class MainActivity extends Activity {
     // after the file picker returns) can update it live - the dialog survives the picker
     // activity being launched on top, it just gets obscured and reappears.
     private TextView localFileStatusText;
+
+    // Same pattern, for the capture dialog's status line and a pending camera capture.
+    private TextView captureStatusText;
+    private Uri pendingPhotoUri;
 
     private TextToSpeech tts;
     private LunaBrain brain;
@@ -199,7 +208,12 @@ public class MainActivity extends Activity {
             else Toast.makeText(this, "Always-listening needs microphone access.", Toast.LENGTH_SHORT).show();
         } else if (requestCode == REQ_NOTIFICATIONS) {
             ensureAlwaysListeningRunning();
+        } else if (requestCode == REQ_IMAGE_CAPTURE) {
+            if (granted) takeCapturePhoto();
+            else Toast.makeText(this, "Photo capture needs Camera access.", Toast.LENGTH_SHORT).show();
         }
+        // REQ_PHONE_PERMISSIONS / REQ_BLUETOOTH: no follow-up action needed here - the
+        // corresponding Settings button just reflects the new state next time it's shown.
     }
 
     @Override
@@ -211,6 +225,8 @@ public class MainActivity extends Activity {
         } else if (requestCode == REQ_PICK_MODEL_FILE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) copyModelFile(uri);
+        } else if (requestCode == REQ_IMAGE_CAPTURE && resultCode == RESULT_OK) {
+            handleCapturedPhoto();
         }
     }
 
@@ -329,7 +345,7 @@ public class MainActivity extends Activity {
         layout.setPadding(pad, pad, pad, pad);
 
         TextView help = new TextView(this);
-        help.setText("Paste a note, contact, or document excerpt. Luna reads it and adds what it mentions to your knowledge graph.");
+        help.setText("Paste a note, contact, or document excerpt - or take a photo of one. Luna reads it and adds what it mentions to your knowledge graph.");
         help.setPadding(0, 0, 0, dp(10));
         layout.addView(help);
 
@@ -340,47 +356,116 @@ public class MainActivity extends Activity {
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         layout.addView(input);
 
-        TextView status = new TextView(this);
-        status.setPadding(0, dp(10), 0, 0);
-        layout.addView(status);
+        Button photoButton = new Button(this);
+        photoButton.setText("📷 Take a photo instead");
+        photoButton.setOnClickListener(v -> takeCapturePhoto());
+        layout.addView(photoButton);
+
+        captureStatusText = new TextView(this);
+        captureStatusText.setPadding(0, dp(10), 0, 0);
+        layout.addView(captureStatusText);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Capture")
                 .setView(layout)
                 .setPositiveButton("Capture", null)
                 .setNegativeButton("Close", null)
+                .setOnDismissListener(d -> captureStatusText = null)
                 .show();
 
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
             if (!brain.isConfigured()) {
-                status.setText(brain.configurationHint());
+                captureStatusText.setText(brain.configurationHint());
                 return;
             }
-            status.setText("Reading...");
+            captureStatusText.setText("Reading...");
             new Thread(() -> brain.capture(text, new LunaBrain.CaptureListener() {
                 @Override
                 public void onResult(int addedEntities, int addedLinks) {
                     runOnUiThread(() -> {
-                        graphView.rebuildFromStore();
-                        refreshStats();
-                        if (addedEntities == 0) {
-                            status.setText("Luna didn't find anything to remember in that.");
-                        } else {
-                            status.setText("Found " + addedEntities + " new entit" + (addedEntities == 1 ? "y" : "ies")
-                                    + " and " + addedLinks + " link" + (addedLinks == 1 ? "" : "s") + ".");
-                            input.setText("");
-                        }
+                        onCaptureResult(addedEntities, addedLinks);
+                        if (addedEntities > 0) input.setText("");
                     });
                 }
 
                 @Override
                 public void onError(String text2) {
-                    runOnUiThread(() -> status.setText(text2));
+                    runOnUiThread(() -> { if (captureStatusText != null) captureStatusText.setText(text2); });
                 }
             })).start();
         });
+    }
+
+    private void onCaptureResult(int addedEntities, int addedLinks) {
+        graphView.rebuildFromStore();
+        refreshStats();
+        if (captureStatusText == null) return;
+        captureStatusText.setText(addedEntities == 0
+                ? "Luna didn't find anything to remember in that."
+                : "Found " + addedEntities + " new entit" + (addedEntities == 1 ? "y" : "ies")
+                        + " and " + addedLinks + " link" + (addedLinks == 1 ? "" : "s") + ".");
+    }
+
+    private void takeCapturePhoto() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_IMAGE_CAPTURE);
+            return;
+        }
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, "luna_capture_" + System.currentTimeMillis() + ".jpg");
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        pendingPhotoUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        if (pendingPhotoUri == null) {
+            if (captureStatusText != null) captureStatusText.setText("Couldn't create a place to save the photo.");
+            return;
+        }
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingPhotoUri);
+        try {
+            startActivityForResult(intent, REQ_IMAGE_CAPTURE);
+        } catch (Exception e) {
+            Toast.makeText(this, "No camera app available", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void handleCapturedPhoto() {
+        Uri uri = pendingPhotoUri;
+        pendingPhotoUri = null;
+        if (uri == null) return;
+        if (!brain.isConfigured()) {
+            if (captureStatusText != null) captureStatusText.setText(brain.configurationHint());
+            return;
+        }
+        if (captureStatusText != null) captureStatusText.setText("Reading photo...");
+
+        new Thread(() -> {
+            byte[] bytes;
+            try (java.io.InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new java.io.IOException("Couldn't open the photo.");
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                bytes = out.toByteArray();
+            } catch (Exception e) {
+                runOnUiThread(() -> { if (captureStatusText != null) captureStatusText.setText("Error reading photo: " + e.getMessage()); });
+                return;
+            }
+
+            brain.captureImage(bytes, new LunaBrain.CaptureListener() {
+                @Override
+                public void onResult(int addedEntities, int addedLinks) {
+                    runOnUiThread(() -> onCaptureResult(addedEntities, addedLinks));
+                }
+
+                @Override
+                public void onError(String text) {
+                    runOnUiThread(() -> { if (captureStatusText != null) captureStatusText.setText(text); });
+                }
+            });
+        }).start();
     }
 
     // ---------- local model file picker ----------
@@ -611,6 +696,54 @@ public class MainActivity extends Activity {
         screenHelp.setPadding(0, 4, 0, pad);
         layout.addView(screenHelp);
 
+        Button phonePermsButton = new Button(this);
+        phonePermsButton.setText(hasPhonePermissions() ? "Calls, texts & reminders: ON" : "Grant call/text/reminder permissions...");
+        phonePermsButton.setOnClickListener(v -> requestPhonePermissions());
+        layout.addView(phonePermsButton);
+
+        TextView phoneHelp = new TextView(this);
+        phoneHelp.setText("Lets Luna call or text a contact by name and set reminders that survive a restart.");
+        phoneHelp.setTextSize(12);
+        phoneHelp.setPadding(0, 4, 0, pad);
+        layout.addView(phoneHelp);
+
+        Button notificationAccessButton = new Button(this);
+        notificationAccessButton.setText(isNotificationAccessEnabled() ? "Notification access: ON (tap to manage)" : "Enable notification access...");
+        notificationAccessButton.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        layout.addView(notificationAccessButton);
+
+        TextView notifHelp = new TextView(this);
+        notifHelp.setText("Lets Luna see notifications from your other apps so you can ask things like “what did I miss”. Turned on manually in Settings, same as screen control.");
+        notifHelp.setTextSize(12);
+        notifHelp.setPadding(0, 4, 0, pad);
+        layout.addView(notifHelp);
+
+        Switch bubbleSwitch = new Switch(this);
+        bubbleSwitch.setText("Floating bubble (quick access from any app)");
+        bubbleSwitch.setChecked(brain.isBubbleEnabled());
+        bubbleSwitch.setPadding(0, 0, 0, pad / 2);
+        layout.addView(bubbleSwitch);
+
+        TextView bubbleHelp = new TextView(this);
+        bubbleHelp.setText("A small draggable orb that stays on top of other apps - tap it to ask Luna something without switching apps. Needs \"draw over other apps\" permission.");
+        bubbleHelp.setTextSize(12);
+        bubbleHelp.setPadding(0, 4, 0, pad);
+        layout.addView(bubbleHelp);
+
+        Button bluetoothPermButton = new Button(this);
+        bluetoothPermButton.setText(hasBluetoothPermission() ? "Bluetooth panel access: ON" : "Grant Bluetooth permission...");
+        bluetoothPermButton.setOnClickListener(v -> requestBluetoothPermission());
+        layout.addView(bluetoothPermButton);
+
+        Button brightnessPermButton = new Button(this);
+        brightnessPermButton.setText(Settings.System.canWrite(this) ? "Brightness control: ON" : "Allow brightness control...");
+        brightnessPermButton.setOnClickListener(v -> {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        });
+        brightnessPermButton.setPadding(0, 0, 0, pad);
+        layout.addView(brightnessPermButton);
+
         Button clearGraphButton = new Button(this);
         clearGraphButton.setText("Clear knowledge graph");
         clearGraphButton.setOnClickListener(v -> {
@@ -654,6 +787,11 @@ public class MainActivity extends Activity {
                     brain.setAlwaysListening(wantsAlwaysListening);
                     if (wantsAlwaysListening) requestRecordAudioThenStartAlwaysListening();
                     else LunaWakeWordService.stop(this);
+
+                    boolean wantsBubble = bubbleSwitch.isChecked();
+                    brain.setBubbleEnabled(wantsBubble);
+                    if (wantsBubble) requestOverlayThenStartBubble();
+                    else LunaBubbleService.stop(this);
                 })
                 .setNegativeButton("Cancel", null)
                 .setOnDismissListener(d -> localFileStatusText = null)
@@ -694,6 +832,66 @@ public class MainActivity extends Activity {
     private void openAccessibilitySettings() {
         Toast.makeText(this, "Find “Luna” in the list and turn it on", Toast.LENGTH_LONG).show();
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+    }
+
+    // ---------- phone permissions (calls, texts, contacts, reminders) ----------
+
+    private static final String[] PHONE_PERMISSIONS = {
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.READ_PHONE_STATE,
+    };
+
+    private boolean hasPhonePermissions() {
+        for (String p : PHONE_PERMISSIONS) {
+            if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) return false;
+        }
+        return true;
+    }
+
+    private void requestPhonePermissions() {
+        requestPermissions(PHONE_PERMISSIONS, REQ_PHONE_PERMISSIONS);
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM));
+            } catch (Exception ignored) {
+                // Not all devices/OEM skins expose this screen - reminders still work with an
+                // inexact fallback alarm in that case (see ReminderStore).
+            }
+        }
+    }
+
+    // ---------- notification access ----------
+
+    private boolean isNotificationAccessEnabled() {
+        String enabled = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return enabled != null && enabled.contains(getPackageName());
+    }
+
+    // ---------- floating bubble ----------
+
+    private void requestOverlayThenStartBubble() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Allow “display over other apps”, then re-enable the bubble in Settings.", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        LunaBubbleService.start(this);
+    }
+
+    // ---------- bluetooth ----------
+
+    private boolean hasBluetoothPermission() {
+        if (Build.VERSION.SDK_INT < 31) return true; // no runtime grant needed pre-Android 12
+        return checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestBluetoothPermission() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN}, REQ_BLUETOOTH);
+        }
     }
 
     // ---------- helpers ----------
