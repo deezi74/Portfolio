@@ -42,6 +42,7 @@ public class LunaAccessibilityService extends AccessibilityService {
 
     private static final int MAX_MARKERS = 30;
     private static final int MAIN_THREAD_TIMEOUT_SECONDS = 5;
+    private static final long AUTO_HIDE_MS = 20_000;
 
     private static volatile LunaAccessibilityService instance;
 
@@ -54,6 +55,11 @@ public class LunaAccessibilityService extends AccessibilityService {
     private WindowManager windowManager;
     private FrameLayout overlayContainer;
     private boolean overlayAdded = false;
+
+    // A stable Runnable reference (not a fresh lambda) so removeCallbacks() can
+    // actually cancel it - this is the safety net that guarantees the numbered
+    // overlay never stays stuck on screen, no matter what code path got us here.
+    private final Runnable autoHideRunnable = this::hideMarkersInternal;
 
     @Override
     protected void onServiceConnected() {
@@ -75,14 +81,14 @@ public class LunaAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         instance = null;
-        runOnMainSync(this::hideMarkersInternal);
+        hideMarkers();
         super.onDestroy();
     }
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         instance = null;
-        runOnMainSync(this::hideMarkersInternal);
+        hideMarkers();
         return super.onUnbind(intent);
     }
 
@@ -119,95 +125,120 @@ public class LunaAccessibilityService extends AccessibilityService {
         }
 
         runOnMainSync(() -> {
+            mainHandler.removeCallbacks(autoHideRunnable);
             hideMarkersInternal();
             markers.clear();
             markers.putAll(newMarkers);
             drawMarkers(newMarkers);
+            // Safety net: if nothing else clears these (an exception, the model
+            // never following up, the app losing focus), they disappear on their
+            // own rather than staying stuck on screen over whatever app is next.
+            if (overlayAdded) mainHandler.postDelayed(autoHideRunnable, AUTO_HIDE_MS);
         });
 
         return new JSONObject().put("elements", elements).put("count", elements.length());
     }
 
-    public JSONObject tap(int number) throws Exception {
-        AccessibilityNodeInfo node = markers.get(number);
-        if (node == null) {
-            return new JSONObject().put("error", "No element numbered " + number + " - call show_screen first.");
-        }
-        String label = labelFor(node);
-
-        boolean ok = clickNodeOrAncestor(node);
-        if (!ok) {
-            Rect bounds = new Rect();
-            node.getBoundsInScreen(bounds);
-            ok = dispatchTapGesture(bounds.centerX(), bounds.centerY());
-        }
-
-        runOnMainSync(this::hideMarkersInternal);
+    /** Hides the overlay and forgets the current numbering. Safe to call anytime, from any thread. */
+    public void hideMarkers() {
+        runOnMainSync(() -> {
+            mainHandler.removeCallbacks(autoHideRunnable);
+            hideMarkersInternal();
+        });
         markers.clear();
-        settle();
+    }
 
-        return ok
-                ? new JSONObject().put("tapped", label)
-                : new JSONObject().put("error", "Couldn't tap [" + number + "] " + label + ".");
+    public JSONObject tap(int number) throws Exception {
+        try {
+            AccessibilityNodeInfo node = markers.get(number);
+            if (node == null) {
+                return new JSONObject().put("error", "No element numbered " + number + " - call show_screen first.");
+            }
+            String label = labelFor(node);
+
+            boolean ok = clickNodeOrAncestor(node);
+            if (!ok) {
+                Rect bounds = new Rect();
+                node.getBoundsInScreen(bounds);
+                ok = dispatchTapGesture(bounds.centerX(), bounds.centerY());
+            }
+            settle();
+
+            return ok
+                    ? new JSONObject().put("tapped", label)
+                    : new JSONObject().put("error", "Couldn't tap [" + number + "] " + label + ".");
+        } finally {
+            // Always runs - a bad number, a thrown exception, anything - so the
+            // markers from this show_screen never outlive this one action.
+            hideMarkers();
+        }
     }
 
     public JSONObject typeText(int number, String text) throws Exception {
-        AccessibilityNodeInfo node = markers.get(number);
-        if (node == null) {
-            return new JSONObject().put("error", "No element numbered " + number + " - call show_screen first.");
+        try {
+            AccessibilityNodeInfo node = markers.get(number);
+            if (node == null) {
+                return new JSONObject().put("error", "No element numbered " + number + " - call show_screen first.");
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+            Bundle args = new Bundle();
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+            boolean ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+            return ok
+                    ? new JSONObject().put("typed", text)
+                    : new JSONObject().put("error", "Couldn't type into [" + number + "] - it may not be a text field.");
+        } finally {
+            hideMarkers();
         }
-        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-        Bundle args = new Bundle();
-        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
-        boolean ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-        return ok
-                ? new JSONObject().put("typed", text)
-                : new JSONObject().put("error", "Couldn't type into [" + number + "] - it may not be a text field.");
     }
 
     public JSONObject scroll(String direction) throws Exception {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        AccessibilityNodeInfo scrollable = root == null ? null : findScrollable(root);
-        if (scrollable == null) {
-            return new JSONObject().put("error", "Nothing on screen looks scrollable.");
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo scrollable = root == null ? null : findScrollable(root);
+            if (scrollable == null) {
+                return new JSONObject().put("error", "Nothing on screen looks scrollable.");
+            }
+            int action = "up".equalsIgnoreCase(direction)
+                    ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                    : AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
+            boolean ok = scrollable.performAction(action);
+            settle();
+            return new JSONObject().put(ok ? "scrolled" : "error", direction);
+        } finally {
+            hideMarkers();
         }
-        int action = "up".equalsIgnoreCase(direction)
-                ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-                : AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
-        boolean ok = scrollable.performAction(action);
-        runOnMainSync(this::hideMarkersInternal);
-        markers.clear();
-        settle();
-        return new JSONObject().put(ok ? "scrolled" : "error", direction);
     }
 
     public JSONObject pressKey(String key) throws Exception {
-        boolean ok;
-        switch (key == null ? "" : key.toLowerCase(java.util.Locale.US)) {
-            case "home":
-                ok = performGlobalAction(GLOBAL_ACTION_HOME);
-                break;
-            case "enter":
-                AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-                if (focused == null) {
-                    ok = false;
-                } else if (android.os.Build.VERSION.SDK_INT >= 30) {
-                    ok = focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
-                } else {
-                    // ACTION_IME_ENTER needs API 30+; older devices fall back to a
-                    // plain click on the focused field (works for many search boxes).
-                    ok = focused.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                }
-                break;
-            case "back":
-            default:
-                ok = performGlobalAction(GLOBAL_ACTION_BACK);
-                break;
+        try {
+            boolean ok;
+            switch (key == null ? "" : key.toLowerCase(java.util.Locale.US)) {
+                case "home":
+                    ok = performGlobalAction(GLOBAL_ACTION_HOME);
+                    break;
+                case "enter":
+                    AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                    if (focused == null) {
+                        ok = false;
+                    } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+                        ok = focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+                    } else {
+                        // ACTION_IME_ENTER needs API 30+; older devices fall back to a
+                        // plain click on the focused field (works for many search boxes).
+                        ok = focused.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    }
+                    break;
+                case "back":
+                default:
+                    ok = performGlobalAction(GLOBAL_ACTION_BACK);
+                    break;
+            }
+            settle();
+            return new JSONObject().put(ok ? "pressed" : "error", key);
+        } finally {
+            hideMarkers();
         }
-        runOnMainSync(this::hideMarkersInternal);
-        markers.clear();
-        settle();
-        return new JSONObject().put(ok ? "pressed" : "error", key);
     }
 
     // ---------- tree scanning ----------

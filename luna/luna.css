@@ -694,6 +694,55 @@ body {
   text-decoration: underline;
 }
 
+.provider-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.radio-row input[type="radio"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+#cloudSection,
+#localSection {
+  margin-bottom: 6px;
+}
+
+#cloudSection.hidden,
+#localSection.hidden {
+  display: none;
+}
+
+#localSection input[type="text"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 0.9rem;
+  margin-bottom: 10px;
+}
+
+#localSection code {
+  background: var(--card-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
 .settings-toggle {
   display: flex;
   align-items: flex-start;

@@ -14,6 +14,7 @@ import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.text.InputType;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
@@ -21,6 +22,8 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -121,8 +124,8 @@ public class MainActivity extends Activity {
         refreshStats();
         graphView.post(graphView::fitToScreen);
 
-        if (brain.getApiKey().isEmpty()) {
-            systemsLabel.setText("Add a Gemini API key to connect");
+        if (!brain.isConfigured()) {
+            systemsLabel.setText(brain.configurationHint());
             showSettingsDialog();
         }
 
@@ -196,8 +199,8 @@ public class MainActivity extends Activity {
     }
 
     private void sendAsk(String question) {
-        if (brain.getApiKey().isEmpty()) {
-            Toast.makeText(this, "Add your Gemini API key first (gear icon).", Toast.LENGTH_SHORT).show();
+        if (!brain.isConfigured()) {
+            Toast.makeText(this, brain.configurationHint(), Toast.LENGTH_SHORT).show();
             showSettingsDialog();
             return;
         }
@@ -335,8 +338,8 @@ public class MainActivity extends Activity {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
-            if (brain.getApiKey().isEmpty()) {
-                status.setText("Add your Gemini API key first (gear icon).");
+            if (!brain.isConfigured()) {
+                status.setText(brain.configurationHint());
                 return;
             }
             status.setText("Reading...");
@@ -373,17 +376,77 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(pad, pad, pad, pad);
 
+        TextView providerLabel = new TextView(this);
+        providerLabel.setText("AI provider");
+        providerLabel.setTextSize(12);
+        layout.addView(providerLabel);
+
+        RadioGroup providerGroup = new RadioGroup(this);
+        providerGroup.setOrientation(RadioGroup.VERTICAL);
+
+        RadioButton cloudRadio = new RadioButton(this);
+        cloudRadio.setId(View.generateViewId());
+        cloudRadio.setText("Cloud (Gemini) — needs a free API key");
+        providerGroup.addView(cloudRadio);
+
+        RadioButton localRadio = new RadioButton(this);
+        localRadio.setId(View.generateViewId());
+        localRadio.setText("Local model on this device — no API key");
+        providerGroup.addView(localRadio);
+
+        providerGroup.check(brain.isLocalProvider() ? localRadio.getId() : cloudRadio.getId());
+        providerGroup.setPadding(0, 0, 0, dp(8));
+        layout.addView(providerGroup);
+
+        // ---- cloud (Gemini) fields ----
+        LinearLayout cloudSection = new LinearLayout(this);
+        cloudSection.setOrientation(LinearLayout.VERTICAL);
+
         EditText keyInput = new EditText(this);
         keyInput.setHint("Gemini API key (AIza...)");
         keyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         keyInput.setText(brain.getApiKey());
-        layout.addView(keyInput);
+        cloudSection.addView(keyInput);
 
         TextView keyHelp = new TextView(this);
         keyHelp.setText("Stored only on this device. Get one at aistudio.google.com/apikey");
         keyHelp.setTextSize(12);
         keyHelp.setPadding(0, 4, 0, pad);
-        layout.addView(keyHelp);
+        cloudSection.addView(keyHelp);
+        layout.addView(cloudSection);
+
+        // ---- local model fields ----
+        LinearLayout localSection = new LinearLayout(this);
+        localSection.setOrientation(LinearLayout.VERTICAL);
+
+        EditText localUrlInput = new EditText(this);
+        localUrlInput.setHint("Server URL");
+        localUrlInput.setText(brain.getLocalUrl());
+        localSection.addView(localUrlInput);
+
+        EditText localModelInput = new EditText(this);
+        localModelInput.setHint("Model name (e.g. llama3.2:3b)");
+        localModelInput.setText(brain.getLocalModel());
+        localModelInput.setPadding(0, dp(6), 0, 0);
+        localSection.addView(localModelInput);
+
+        TextView localHelp = new TextView(this);
+        localHelp.setText("Talks to an Ollama-compatible server already running with a model you've " +
+                "pulled - on this phone (e.g. via Termux) or another device on your network. Nothing " +
+                "leaves your network, no key needed. Screen-control tools aren't available in local " +
+                "mode yet - just Q&A and knowledge capture.");
+        localHelp.setTextSize(12);
+        localHelp.setPadding(0, 4, 0, pad);
+        localSection.addView(localHelp);
+        layout.addView(localSection);
+
+        Runnable updateProviderSections = () -> {
+            boolean local = providerGroup.getCheckedRadioButtonId() == localRadio.getId();
+            cloudSection.setVisibility(local ? View.GONE : View.VISIBLE);
+            localSection.setVisibility(local ? View.VISIBLE : View.GONE);
+        };
+        updateProviderSections.run();
+        providerGroup.setOnCheckedChangeListener((group, checkedId) -> updateProviderSections.run());
 
         Switch alwaysListenSwitch = new Switch(this);
         alwaysListenSwitch.setText("Always listen for “Luna”");
@@ -440,8 +503,12 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Save", (dialog, which) -> {
                     String key = keyInput.getText().toString().trim();
                     brain.setApiKey(key);
+                    brain.setLocalUrl(localUrlInput.getText().toString().trim());
+                    brain.setLocalModel(localModelInput.getText().toString().trim());
+                    brain.setProvider(providerGroup.getCheckedRadioButtonId() == localRadio.getId()
+                            ? LunaBrain.PROVIDER_LOCAL : LunaBrain.PROVIDER_GEMINI);
                     brain.setMuted(muteSwitch.isChecked());
-                    if (!key.isEmpty()) systemsLabel.setText("All systems connected");
+                    systemsLabel.setText(brain.isConfigured() ? "All systems connected" : brain.configurationHint());
 
                     boolean wantsAlwaysListening = alwaysListenSwitch.isChecked();
                     brain.setAlwaysListening(wantsAlwaysListening);

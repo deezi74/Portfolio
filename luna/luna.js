@@ -8,9 +8,19 @@
   const ACTIVITY_STORAGE = "luna_activity_v2";
   const MUTE_STORAGE = "luna_muted";
   const ALWAYS_LISTEN_STORAGE = "luna_always_listening";
+  const PROVIDER_STORAGE = "luna_provider";
+  const LOCAL_URL_STORAGE = "luna_local_url";
+  const LOCAL_MODEL_STORAGE = "luna_local_model";
   const MODEL = "gemini-3.6-flash";
+  const DEFAULT_LOCAL_URL = "http://localhost:11434";
   const WAKE_WORD = "luna";
   const MAX_ACTIVITY = 100;
+
+  const EXTRACT_JSON_INSTRUCTIONS =
+    "Respond with ONLY a single JSON object - no other text, no markdown code fences - in " +
+    'exactly this shape: {"entities":[{"label":"...","type":"person|location|document|concept|' +
+    'ai_model|technology|task|thought","note":"..."}],"links":[{"a":"...","b":"...","relation":' +
+    '"..."}]}. If there\'s nothing worth recording, respond with {"entities":[],"links":[]}.';
 
   const TYPES = {
     person: { color: "#f472b6", icon: "\u{1F464}", label: "Person" },
@@ -57,6 +67,13 @@
   const apiKeyInput = $("apiKeyInput");
   const saveKeyBtn = $("saveKeyBtn");
   const clearKeyBtn = $("clearKeyBtn");
+  const providerCloud = $("providerCloud");
+  const providerLocal = $("providerLocal");
+  const cloudSection = $("cloudSection");
+  const localSection = $("localSection");
+  const localUrlInput = $("localUrlInput");
+  const localModelInput = $("localModelInput");
+  const saveLocalBtn = $("saveLocalBtn");
   const alwaysListenToggle = $("alwaysListenToggle");
   const muteToggle = $("muteToggle");
   const clearGraphBtn = $("clearGraphBtn");
@@ -119,6 +136,32 @@
 
   function getApiKey() {
     return localStorage.getItem(KEY_STORAGE) || "";
+  }
+
+  function getProvider() {
+    return localStorage.getItem(PROVIDER_STORAGE) || "cloud";
+  }
+
+  function isLocalProvider() {
+    return getProvider() === "local";
+  }
+
+  function getLocalUrl() {
+    return localStorage.getItem(LOCAL_URL_STORAGE) || DEFAULT_LOCAL_URL;
+  }
+
+  function getLocalModel() {
+    return localStorage.getItem(LOCAL_MODEL_STORAGE) || "";
+  }
+
+  function isConfigured() {
+    return isLocalProvider() ? !!getLocalModel().trim() : !!getApiKey();
+  }
+
+  function configurationHint() {
+    return isLocalProvider()
+      ? "Set a local model name in System settings first."
+      : "Add your Gemini API key in System settings first.";
   }
 
   // ---------- graph <-> physics nodes ----------
@@ -440,9 +483,8 @@
   async function captureText() {
     const text = captureInput.value.trim();
     if (!text) return;
-    const key = getApiKey();
-    if (!key) {
-      captureStatus.textContent = "Add your Gemini API key in System settings first.";
+    if (!isConfigured()) {
+      captureStatus.textContent = configurationHint();
       openSettings();
       return;
     }
@@ -451,22 +493,7 @@
     captureStatus.textContent = "Reading...";
 
     try {
-      const res = await fetch(geminiUrl(key), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: EXTRACT_SYSTEM_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text }] }],
-          tools: [{ function_declarations: [recordEntitiesDeclaration()] }],
-          tool_config: { function_calling_config: { mode: "ANY" } },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data && data.error && data.error.message) || res.statusText);
-
-      const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-      const callPart = parts && parts.find((p) => p.functionCall && p.functionCall.name === "record_entities");
-      const args = callPart ? callPart.functionCall.args : null;
+      const args = isLocalProvider() ? await captureLocal(text) : await captureCloud(text);
 
       if (!args || !Array.isArray(args.entities) || !args.entities.length) {
         captureStatus.textContent = "Luna didn't find anything to remember in that.";
@@ -486,6 +513,34 @@
     } finally {
       captureBtn.disabled = false;
     }
+  }
+
+  async function captureCloud(text) {
+    const key = getApiKey();
+    const res = await fetch(geminiUrl(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: EXTRACT_SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        tools: [{ function_declarations: [recordEntitiesDeclaration()] }],
+        tool_config: { function_calling_config: { mode: "ANY" } },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data && data.error && data.error.message) || res.statusText);
+
+    const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+    const callPart = parts && parts.find((p) => p.functionCall && p.functionCall.name === "record_entities");
+    return callPart ? callPart.functionCall.args : null;
+  }
+
+  // Local models don't reliably support forced function calling, so this asks
+  // for plain JSON in the prompt and parses that instead of using the tools API.
+  async function captureLocal(text) {
+    const prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
+    const raw = await callLocalChat(null, prompt);
+    return extractJsonObject(raw);
   }
 
   function recordEntitiesDeclaration() {
@@ -580,6 +635,64 @@
     return "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + encodeURIComponent(key);
   }
 
+  // ---------- local model (Ollama-compatible, no API key) ----------
+
+  async function callLocalChat(systemPrompt, userPrompt) {
+    const base = getLocalUrl().trim().replace(/\/+$/, "");
+    const model = getLocalModel().trim();
+    if (!base) throw new Error("No local server URL set.");
+    if (!model) throw new Error("No local model name set.");
+
+    const messages = [];
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+    messages.push({ role: "user", content: userPrompt });
+
+    let res;
+    try {
+      res = await fetch(base + "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, stream: false }),
+      });
+    } catch (err) {
+      throw new Error(
+        "Couldn't reach " + base + ". Make sure a local model server is running there, and that " +
+        "it allows this site (e.g. Ollama needs OLLAMA_ORIGINS set)."
+      );
+    }
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((data && data.error) || res.statusText);
+    }
+    if (!data || !data.message || typeof data.message.content !== "string") {
+      throw new Error("Unexpected response from the local server.");
+    }
+    return data.message.content;
+  }
+
+  function extractJsonObject(raw) {
+    if (!raw) throw new Error("Empty response from local model.");
+    let s = raw.trim();
+    if (s.startsWith("```")) {
+      const firstNewline = s.indexOf("\n");
+      if (firstNewline !== -1) s = s.slice(firstNewline + 1);
+      const fenceEnd = s.lastIndexOf("```");
+      if (fenceEnd >= 0) s = s.slice(0, fenceEnd);
+      s = s.trim();
+    }
+    try {
+      return JSON.parse(s);
+    } catch (_) {
+      const start = s.indexOf("{");
+      const end = s.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        return JSON.parse(s.slice(start, end + 1));
+      }
+      throw new Error("Couldn't parse a JSON reply from the local model.");
+    }
+  }
+
   // ---------- ask ----------
 
   askForm.addEventListener("submit", (e) => {
@@ -591,9 +704,8 @@
   });
 
   async function askLuna(question) {
-    const key = getApiKey();
-    if (!key) {
-      logActivity("system", "Add your Gemini API key in System settings to ask Luna anything.");
+    if (!isConfigured()) {
+      logActivity("system", configurationHint());
       openSettings();
       return;
     }
@@ -621,18 +733,7 @@
       "conversationally, the way you'd speak on a phone call.\n\nQuestion: " + question;
 
     try {
-      const res = await fetch(geminiUrl(key), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data && data.error && data.error.message) || res.statusText);
-
-      const reply =
-        data && data.candidates && data.candidates[0] && data.candidates[0].content &&
-        data.candidates[0].content.parts && data.candidates[0].content.parts.map((p) => p.text || "").join("");
-
+      const reply = isLocalProvider() ? await askLocal(prompt) : await askCloud(prompt);
       if (!reply) throw new Error("Luna didn't return a reply.");
 
       logActivity("ask", `Q: ${question}\nA: ${reply}`);
@@ -642,6 +743,26 @@
     } finally {
       setOrbState(null);
     }
+  }
+
+  async function askCloud(prompt) {
+    const key = getApiKey();
+    const res = await fetch(geminiUrl(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data && data.error && data.error.message) || res.statusText);
+
+    return (
+      data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+      data.candidates[0].content.parts && data.candidates[0].content.parts.map((p) => p.text || "").join("")
+    );
+  }
+
+  async function askLocal(prompt) {
+    return callLocalChat(null, prompt);
   }
 
   // ---------- orb / voice state ----------
@@ -656,8 +777,18 @@
 
   // ---------- settings ----------
 
+  function updateProviderSections() {
+    const local = isLocalProvider();
+    cloudSection.classList.toggle("hidden", local);
+    localSection.classList.toggle("hidden", !local);
+  }
+
   function openSettings() {
     apiKeyInput.value = getApiKey();
+    localUrlInput.value = getLocalUrl();
+    localModelInput.value = getLocalModel();
+    (isLocalProvider() ? providerLocal : providerCloud).checked = true;
+    updateProviderSections();
     settingsOverlay.classList.remove("hidden");
   }
   function hideSettingsPanel() { settingsOverlay.classList.add("hidden"); }
@@ -665,6 +796,15 @@
   settingsBtn.addEventListener("click", openSettings);
   closeSettings.addEventListener("click", hideSettingsPanel);
   settingsOverlay.addEventListener("click", (e) => { if (e.target === settingsOverlay) hideSettingsPanel(); });
+
+  [providerCloud, providerLocal].forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      localStorage.setItem(PROVIDER_STORAGE, radio.value);
+      updateProviderSections();
+      systemsLabel.textContent = isConfigured() ? "All systems connected" : configurationHint();
+    });
+  });
 
   saveKeyBtn.addEventListener("click", () => {
     const key = apiKeyInput.value.trim();
@@ -679,6 +819,14 @@
     localStorage.removeItem(KEY_STORAGE);
     apiKeyInput.value = "";
     logActivity("system", "API key cleared.");
+  });
+
+  saveLocalBtn.addEventListener("click", () => {
+    localStorage.setItem(LOCAL_URL_STORAGE, localUrlInput.value.trim() || DEFAULT_LOCAL_URL);
+    localStorage.setItem(LOCAL_MODEL_STORAGE, localModelInput.value.trim());
+    logActivity("system", "Local model settings saved.");
+    systemsLabel.textContent = isConfigured() ? "All systems connected" : configurationHint();
+    hideSettingsPanel();
   });
 
   clearGraphBtn.addEventListener("click", () => {
@@ -814,7 +962,7 @@
 
   // ---------- init ----------
 
-  systemsLabel.textContent = getApiKey() ? "All systems connected" : "Add a Gemini API key to connect";
+  systemsLabel.textContent = isConfigured() ? "All systems connected" : configurationHint();
 
   resizeCanvas();
   rebuildNodes();
@@ -823,7 +971,7 @@
   renderActivity();
   requestAnimationFrame(loop);
 
-  if (!getApiKey()) {
-    logActivity("system", "Welcome to Luna! Add a free Gemini API key in System settings to get started.");
+  if (!isConfigured()) {
+    logActivity("system", "Welcome to Luna! Add a free Gemini API key, or set up a local model, in System settings to get started.");
   }
 })();

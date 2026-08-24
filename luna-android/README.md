@@ -14,13 +14,22 @@ when you ask her to.
    automatically if it's missing).
 3. Run on a device/emulator running Android 8.0 (API 26) or newer.
 
-## Set up your API key
+## Set up your API key - or skip it entirely with a local model
 
 Luna never ships with a real API key baked in. Add a free **Gemini API key**
 via the gear icon: <https://aistudio.google.com/apikey>. It's stored in a
 private `SharedPreferences` file on the device only - along with your
 knowledge graph and activity log - nothing is synced to a server, by design,
 since this app has none.
+
+Prefer not to use a cloud key at all? In Settings, switch the provider to
+**"Local model on this device"** and point it at an Ollama-compatible server
+you already have running with a model pulled - on the phone itself (e.g. via
+Termux) or another device on your network - plus the model's name (e.g.
+`llama3.2:3b`). No API key, nothing leaves your network. Trade-off: local
+models don't get the phone-control tools (open_app/show_screen/tap/...) -
+just knowledge capture and grounded Q&A - since reliably driving a multi-step
+tool loop needs more than most small on-device models can promise.
 
 ## What's in here
 

@@ -28,8 +28,22 @@ public class LunaBrain {
     private static final String PREF_API_KEY = "gemini_api_key";
     private static final String PREF_MUTED = "muted";
     private static final String PREF_ALWAYS_LISTENING = "always_listening";
+    private static final String PREF_PROVIDER = "provider";
+    private static final String PREF_LOCAL_URL = "local_url";
+    private static final String PREF_LOCAL_MODEL = "local_model";
+
+    public static final String PROVIDER_GEMINI = "gemini";
+    public static final String PROVIDER_LOCAL = "local";
+    private static final String DEFAULT_LOCAL_URL = "http://127.0.0.1:11434";
 
     private static final String MODEL = "gemini-3.6-flash";
+
+    private static final String EXTRACT_JSON_INSTRUCTIONS =
+            "Respond with ONLY a single JSON object - no other text, no markdown code fences - in " +
+            "exactly this shape: {\"entities\":[{\"label\":\"...\",\"type\":\"person|location|" +
+            "document|concept|ai_model|technology|task|thought\",\"note\":\"...\"}],\"links\":" +
+            "[{\"a\":\"...\",\"b\":\"...\",\"relation\":\"...\"}]}. If there's nothing worth " +
+            "recording, respond with {\"entities\":[],\"links\":[]}.";
 
     private static final String ASK_SYSTEM_PROMPT =
             "You are Luna, a warm, concise personal AI assistant running natively on the " +
@@ -89,15 +103,41 @@ public class LunaBrain {
 
     public boolean isScreenControlEnabled() { return LunaAccessibilityService.getInstance() != null; }
 
+    public String getProvider() { return prefs.getString(PREF_PROVIDER, PROVIDER_GEMINI); }
+    public void setProvider(String provider) { prefs.edit().putString(PREF_PROVIDER, provider).apply(); }
+    public boolean isLocalProvider() { return PROVIDER_LOCAL.equals(getProvider()); }
+
+    public String getLocalUrl() { return prefs.getString(PREF_LOCAL_URL, DEFAULT_LOCAL_URL); }
+    public void setLocalUrl(String url) { prefs.edit().putString(PREF_LOCAL_URL, url).apply(); }
+
+    public String getLocalModel() { return prefs.getString(PREF_LOCAL_MODEL, ""); }
+    public void setLocalModel(String model) { prefs.edit().putString(PREF_LOCAL_MODEL, model).apply(); }
+
+    /** True once there's enough set up to actually talk to Luna - a key for cloud, a model name for local. */
+    public boolean isConfigured() {
+        return isLocalProvider() ? !getLocalModel().trim().isEmpty() : !getApiKey().isEmpty();
+    }
+
+    public String configurationHint() {
+        return isLocalProvider()
+                ? "Set a local model name first, in Luna's settings."
+                : "Add your Gemini API key first, in Luna's settings.";
+    }
+
     // ---------- ask (grounded Q&A + phone-control tool loop) ----------
 
     public void ask(String question, Listener listener) {
-        String apiKey = getApiKey();
-        if (apiKey.isEmpty()) {
-            listener.onError("Add your Gemini API key first, in Luna's settings.");
+        if (!isConfigured()) {
+            listener.onError(configurationHint());
             return;
         }
 
+        if (isLocalProvider()) {
+            askLocal(question, listener);
+            return;
+        }
+
+        String apiKey = getApiKey();
         String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + TOOLS_ADDENDUM;
         JSONArray contents = new JSONArray();
 
@@ -154,6 +194,27 @@ public class LunaBrain {
         } catch (Exception e) {
             store.logActivity("system", "Error asking Luna: " + e.getMessage());
             listener.onError("Error asking Luna: " + e.getMessage());
+        } finally {
+            // Belt-and-suspenders: whatever happened above, this request is done,
+            // so any numbered markers from a show_screen call shouldn't outlive it.
+            LunaAccessibilityService service = LunaAccessibilityService.getInstance();
+            if (service != null) service.hideMarkers();
+        }
+    }
+
+    /** Local models don't get the phone-control tools - no reliable forced/parallel function
+     *  calling to lean on, so this is grounded Q&A only, same as the "ask" bar on the web demo. */
+    private void askLocal(String question, Listener listener) {
+        try {
+            String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() +
+                    "\n\n(Screen-control tools aren't available with a local model right now - just answer the question.)";
+            String reply = callLocalChat(systemPrompt, question);
+            if (reply == null || reply.trim().isEmpty()) reply = "(no reply)";
+            store.logActivity("ask", "Q: " + question + "\nA: " + reply);
+            listener.onReply(reply);
+        } catch (Exception e) {
+            store.logActivity("system", "Error asking Luna (local model): " + e.getMessage());
+            listener.onError("Error asking Luna: " + e.getMessage());
         }
     }
 
@@ -172,9 +233,8 @@ public class LunaBrain {
     // ---------- capture (entity extraction into the graph) ----------
 
     public void capture(String text, CaptureListener listener) {
-        String apiKey = getApiKey();
-        if (apiKey.isEmpty()) {
-            listener.onError("Add your Gemini API key first, in Luna's settings.");
+        if (!isConfigured()) {
+            listener.onError(configurationHint());
             return;
         }
         if (text == null || text.trim().isEmpty()) {
@@ -182,6 +242,12 @@ public class LunaBrain {
             return;
         }
 
+        if (isLocalProvider()) {
+            captureLocal(text, listener);
+            return;
+        }
+
+        String apiKey = getApiKey();
         try {
             JSONObject requestBody = new JSONObject();
             requestBody.put("system_instruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", EXTRACT_SYSTEM_PROMPT))));
@@ -216,6 +282,51 @@ public class LunaBrain {
             listener.onResult(counts[0], counts[1]);
         } catch (Exception e) {
             listener.onError("Error capturing: " + e.getMessage());
+        }
+    }
+
+    /** Local models don't reliably support forced function calling, so this asks the model to
+     *  reply with plain JSON in the prompt and parses that instead of using the tools API. */
+    private void captureLocal(String text, CaptureListener listener) {
+        try {
+            String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
+            String raw = callLocalChat(null, prompt);
+            JSONObject args = extractJsonObject(raw);
+
+            if (args == null || !args.has("entities") || args.getJSONArray("entities").length() == 0) {
+                store.logActivity("capture", "Captured a note — no new entities found.");
+                listener.onResult(0, 0);
+                return;
+            }
+
+            int[] counts = store.mergeExtraction(args);
+            store.logActivity("capture", "Captured a note → +" + counts[0] + " entities, +" + counts[1] + " links.");
+            listener.onResult(counts[0], counts[1]);
+        } catch (Exception e) {
+            listener.onError("Error capturing (local model): " + e.getMessage());
+        }
+    }
+
+    /** Pulls a JSON object out of a local model's reply, tolerating markdown fences or stray prose. */
+    private static JSONObject extractJsonObject(String raw) throws Exception {
+        if (raw == null) throw new Exception("Empty response from local model.");
+        String s = raw.trim();
+        if (s.startsWith("```")) {
+            int firstNewline = s.indexOf('\n');
+            if (firstNewline != -1) s = s.substring(firstNewline + 1);
+            int fenceEnd = s.lastIndexOf("```");
+            if (fenceEnd >= 0) s = s.substring(0, fenceEnd);
+            s = s.trim();
+        }
+        try {
+            return new JSONObject(s);
+        } catch (Exception e) {
+            int start = s.indexOf('{');
+            int end = s.lastIndexOf('}');
+            if (start >= 0 && end > start) {
+                return new JSONObject(s.substring(start, end + 1));
+            }
+            throw new Exception("Couldn't parse a JSON reply from the local model.");
         }
     }
 
@@ -279,5 +390,69 @@ public class LunaBrain {
 
         if (responseCode != 200) throw new Exception("API error (" + responseCode + ") - " + responseBuilder);
         return new JSONObject(responseBuilder.toString());
+    }
+
+    /**
+     * Talks to a local, on-device (or same-network) model server using Ollama's native chat API
+     * (POST /api/chat, {model, messages, stream:false} -> {message:{role,content}}). No API key -
+     * just a URL and a model name the user already has pulled locally.
+     */
+    private String callLocalChat(String systemPrompt, String userPrompt) throws Exception {
+        String base = getLocalUrl().trim();
+        if (base.isEmpty()) throw new Exception("No local server URL set.");
+        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        String model = getLocalModel().trim();
+        if (model.isEmpty()) throw new Exception("No local model name set.");
+
+        JSONArray messages = new JSONArray();
+        if (systemPrompt != null && !systemPrompt.isEmpty()) {
+            messages.put(new JSONObject().put("role", "system").put("content", systemPrompt));
+        }
+        messages.put(new JSONObject().put("role", "user").put("content", userPrompt));
+
+        JSONObject body = new JSONObject()
+                .put("model", model)
+                .put("messages", messages)
+                .put("stream", false);
+
+        URL url;
+        try {
+            url = new URL(base + "/api/chat");
+        } catch (Exception e) {
+            throw new Exception("\"" + base + "\" isn't a valid server URL.");
+        }
+
+        HttpURLConnection conn;
+        try {
+            conn = (HttpURLConnection) url.openConnection();
+        } catch (Exception e) {
+            throw new Exception("Couldn't reach " + base + " - is a local model server running on this device?");
+        }
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(180000); // on-device inference can be slow - give it room
+
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new Exception("Couldn't reach " + base + " - is a local model server running on this device?");
+        }
+
+        int responseCode = conn.getResponseCode();
+        Scanner scanner = new Scanner(responseCode == 200 ? conn.getInputStream() : conn.getErrorStream(), "UTF-8");
+        StringBuilder responseBuilder = new StringBuilder();
+        while (scanner.hasNextLine()) responseBuilder.append(scanner.nextLine());
+        scanner.close();
+
+        if (responseCode != 200) {
+            throw new Exception("Local model error (" + responseCode + ") - " + responseBuilder);
+        }
+
+        JSONObject responseJson = new JSONObject(responseBuilder.toString());
+        JSONObject message = responseJson.optJSONObject("message");
+        if (message == null) throw new Exception("Unexpected response from the local server.");
+        return message.optString("content", "");
     }
 }

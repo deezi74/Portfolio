@@ -124,19 +124,49 @@
         <button id="closeSettings" class="icon-btn" aria-label="Close settings">&times;</button>
       </div>
       <p class="settings-copy">
-        Luna is powered by the Google Gemini API. Paste your own free API key below &mdash;
-        it's saved <strong>only in your browser</strong> (localStorage), along with your knowledge
-        graph, and never sent anywhere except directly to Google's API.
+        Choose how Luna thinks. Everything below is saved <strong>only in your browser</strong>
+        (localStorage), along with your knowledge graph.
       </p>
-      <label for="apiKeyInput">Gemini API key</label>
-      <input id="apiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
-      <div class="settings-actions">
-        <button id="saveKeyBtn" class="resume-btn">Save key</button>
-        <button id="clearKeyBtn" class="resume-btn view">Clear key</button>
+
+      <div class="provider-choice">
+        <label class="radio-row">
+          <input type="radio" name="provider" id="providerCloud" value="cloud" />
+          Cloud (Gemini) &mdash; needs a free API key
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="provider" id="providerLocal" value="local" />
+          Local model on this device &mdash; no API key
+        </label>
       </div>
-      <a class="get-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
-        Get a free Gemini API key &nearr;
-      </a>
+
+      <div id="cloudSection">
+        <label for="apiKeyInput">Gemini API key</label>
+        <input id="apiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+        <div class="settings-actions">
+          <button id="saveKeyBtn" class="resume-btn">Save key</button>
+          <button id="clearKeyBtn" class="resume-btn view">Clear key</button>
+        </div>
+        <a class="get-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+          Get a free Gemini API key &nearr;
+        </a>
+      </div>
+
+      <div id="localSection">
+        <label for="localUrlInput">Server URL</label>
+        <input id="localUrlInput" type="text" placeholder="http://localhost:11434" autocomplete="off" />
+        <label for="localModelInput">Model name</label>
+        <input id="localModelInput" type="text" placeholder="e.g. llama3.2:3b" autocomplete="off" />
+        <div class="settings-actions">
+          <button id="saveLocalBtn" class="resume-btn">Save</button>
+        </div>
+        <p class="settings-note">
+          Talks to an Ollama-compatible server already running with a model you've pulled &mdash;
+          on this device or another one on your network. If it can't connect, that server likely
+          needs <code>OLLAMA_ORIGINS=*</code> set so it accepts requests from a browser tab on a
+          different origin. Screen/app control isn't available in local mode &mdash; only Q&amp;A
+          and knowledge capture, and only the native Android app can control the phone at all.
+        </p>
+      </div>
 
       <div class="settings-toggle">
         <label class="switch">
