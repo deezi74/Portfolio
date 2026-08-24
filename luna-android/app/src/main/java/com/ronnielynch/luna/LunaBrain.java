@@ -29,7 +29,7 @@ public class LunaBrain {
     private static final String PREF_MUTED = "muted";
     private static final String PREF_ALWAYS_LISTENING = "always_listening";
 
-    private static final String MODEL = "gemini-2.0-flash";
+    private static final String MODEL = "gemini-3.6-flash";
 
     private static final String ASK_SYSTEM_PROMPT =
             "You are Luna, a warm, concise personal AI assistant running natively on the " +

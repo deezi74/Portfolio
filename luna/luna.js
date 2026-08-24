@@ -8,7 +8,7 @@
   const ACTIVITY_STORAGE = "luna_activity_v2";
   const MUTE_STORAGE = "luna_muted";
   const ALWAYS_LISTEN_STORAGE = "luna_always_listening";
-  const MODEL = "gemini-2.0-flash";
+  const MODEL = "gemini-3.6-flash";
   const WAKE_WORD = "luna";
   const MAX_ACTIVITY = 100;
 
