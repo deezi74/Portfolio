@@ -143,7 +143,9 @@ public class LunaBrain {
                     JSONObject result = ScreenTools.execute(appContext, name, args);
                     responseParts.put(new JSONObject().put("functionResponse", new JSONObject().put("name", name).put("response", result)));
                 }
-                contents.put(new JSONObject().put("role", "function").put("parts", responseParts));
+                // Gemini's current API rejects a "function" role for tool results -
+                // function responses go back as a "user" turn instead.
+                contents.put(new JSONObject().put("role", "user").put("parts", responseParts));
             }
 
             String fallback = "That took more steps than I'm allowed - want me to keep going?";
