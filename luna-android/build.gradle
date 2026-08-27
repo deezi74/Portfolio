@@ -1,0 +1,7 @@
+// Top-level build file
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+    // For the vendored llama.cpp Kotlin/coroutines bridge (LocalLlm.kt, com.arm.aichat) -
+    // everything else in this app is plain Java.
+    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+}

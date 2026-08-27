@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Luna - Personal Intelligence | Ronnie Lynch</title>
+  <meta name="description" content="Luna, a live personal knowledge-graph AI assistant built by Ronnie Lynch." />
+  <link rel="stylesheet" href="luna.css"/>
+</head>
+<body>
+  <a href="../index.html" class="back-pill">&larr; Portfolio</a>
+
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-name glow">LUNA</div>
+        <div class="brand-sub">PERSONAL INTELLIGENCE</div>
+      </div>
+      <div class="topbar-right">
+        <span class="live-pill"><span class="dot ok"></span>LIVE</span>
+        <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <div class="status-row">
+      <span class="badge"><span class="dot ok"></span>LIVE</span>
+      <span class="badge">&#128274; PRIVATE</span>
+      <span class="badge">&#9881; RUNTIME</span>
+    </div>
+
+    <div class="knowledge-card">
+      <div>
+        <div class="knowledge-title">CONNECTED KNOWLEDGE</div>
+        <div class="knowledge-sub" id="knowledgeSub">0 domains &middot; 0 live entities</div>
+      </div>
+      <button id="filterBtn" class="pill-btn">&#9776; Filter</button>
+    </div>
+
+    <div class="graph-wrap">
+      <canvas id="graphCanvas"></canvas>
+
+      <div class="graph-controls">
+        <button id="zoomIn" class="graph-ctrl-btn" aria-label="Zoom in">+</button>
+        <button id="zoomOut" class="graph-ctrl-btn" aria-label="Zoom out">&minus;</button>
+        <button id="zoomFit" class="graph-ctrl-btn" aria-label="Fit to screen">&#10021;</button>
+      </div>
+
+      <div class="empty-hint" id="emptyHint">
+        <p>Your knowledge graph is empty.</p>
+        <p>Tap <strong>+ Capture</strong> below and paste in a note, contact, or document to get started.</p>
+      </div>
+
+      <div id="nodeCard" class="node-card hidden"></div>
+
+      <div class="graph-footer" id="physicsLabel">LIVE PHYSICS &mdash; 0 nodes &middot; 0 links</div>
+
+      <div class="orb-dock">
+        <button id="orbBtn" class="orb-btn" aria-label="Talk to Luna">
+          <span class="orb-ring ring-1"></span>
+          <span class="orb-ring ring-2"></span>
+          <span class="orb-core"></span>
+        </button>
+        <div id="orbLabel" class="orb-label">READY</div>
+      </div>
+    </div>
+
+    <div class="systems-row">
+      <span class="dot ok"></span>
+      <span id="systemsLabel">All systems connected</span>
+      <button id="traceBtn" class="link-btn">Trace &rsaquo;</button>
+    </div>
+
+    <form id="askForm" class="ask-bar">
+      <span class="ask-icon">&#10024;</span>
+      <input id="askInput" type="text" autocomplete="off" placeholder="Ask Luna about your world" />
+      <button type="button" id="micBtn" class="icon-btn mic-btn" title="Voice input" aria-label="Voice input">&#127908;</button>
+    </form>
+
+    <nav class="bottom-nav">
+      <button type="button" class="nav-btn" data-tab="activity"><span>&#8635;</span>Activity</button>
+      <button type="button" class="nav-btn" data-tab="capture"><span>+</span>Capture</button>
+      <button type="button" class="nav-btn" data-tab="system"><span>&#9881;</span>System</button>
+    </nav>
+  </div>
+
+  <!-- Activity sheet -->
+  <div id="activitySheet" class="sheet hidden">
+    <div class="sheet-head">
+      <h2>Activity</h2>
+      <button class="icon-btn sheet-close" data-close="activitySheet" aria-label="Close">&times;</button>
+    </div>
+    <div id="activityList" class="activity-list"></div>
+  </div>
+
+  <!-- Capture sheet -->
+  <div id="captureSheet" class="sheet hidden">
+    <div class="sheet-head">
+      <h2>Capture</h2>
+      <button class="icon-btn sheet-close" data-close="captureSheet" aria-label="Close">&times;</button>
+    </div>
+    <p class="sheet-copy">
+      Paste in a note, a contact, a document excerpt, meeting notes &mdash; anything. Luna reads it and
+      adds whatever people, places, projects, and ideas it mentions to your knowledge graph.
+    </p>
+    <textarea id="captureInput" placeholder="Paste or type something for Luna to learn..."></textarea>
+    <button id="captureBtn" class="resume-btn full-width">Capture</button>
+    <div id="captureStatus" class="capture-status"></div>
+  </div>
+
+  <!-- Filter sheet -->
+  <div id="filterSheet" class="sheet hidden">
+    <div class="sheet-head">
+      <h2>Filter entities</h2>
+      <button class="icon-btn sheet-close" data-close="filterSheet" aria-label="Close">&times;</button>
+    </div>
+    <div id="filterList" class="filter-list"></div>
+  </div>
+
+  <!-- Settings / System sheet -->
+  <div id="settingsOverlay" class="overlay hidden">
+    <div class="settings-panel">
+      <div class="settings-head">
+        <h2>System</h2>
+        <button id="closeSettings" class="icon-btn" aria-label="Close settings">&times;</button>
+      </div>
+      <p class="settings-copy">
+        Choose how Luna thinks. Everything below is saved <strong>only in your browser</strong>
+        (localStorage), along with your knowledge graph.
+      </p>
+
+      <div class="provider-choice">
+        <label class="radio-row">
+          <input type="radio" name="provider" id="providerCloud" value="cloud" />
+          Cloud (Gemini) &mdash; needs a free API key
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="provider" id="providerLocal" value="local" />
+          Local model on this device &mdash; no API key
+        </label>
+      </div>
+
+      <div id="cloudSection">
+        <label for="apiKeyInput">Gemini API key</label>
+        <input id="apiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+        <div class="settings-actions">
+          <button id="saveKeyBtn" class="resume-btn">Save key</button>
+          <button id="clearKeyBtn" class="resume-btn view">Clear key</button>
+        </div>
+        <a class="get-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+          Get a free Gemini API key &nearr;
+        </a>
+      </div>
+
+      <div id="localSection">
+        <label for="localUrlInput">Server URL</label>
+        <input id="localUrlInput" type="text" placeholder="http://localhost:11434" autocomplete="off" />
+        <label for="localModelInput">Model name</label>
+        <input id="localModelInput" type="text" placeholder="e.g. llama3.2:3b" autocomplete="off" />
+        <div class="settings-actions">
+          <button id="saveLocalBtn" class="resume-btn">Save</button>
+        </div>
+        <p class="settings-note">
+          Talks to an Ollama-compatible server already running with a model you've pulled &mdash;
+          on this device or another one on your network. If it can't connect, that server likely
+          needs <code>OLLAMA_ORIGINS=*</code> set so it accepts requests from a browser tab on a
+          different origin. Screen/app control isn't available in local mode &mdash; only Q&amp;A
+          and knowledge capture, and only the native Android app can control the phone at all.
+        </p>
+      </div>
+
+      <div class="settings-toggle">
+        <label class="switch">
+          <input type="checkbox" id="alwaysListenToggle" />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div class="toggle-label">Always listen for &ldquo;Luna&rdquo;</div>
+          <div class="toggle-help">Keeps the mic on while this tab is open; saying the wake word triggers a question &mdash; browsers can't listen in the background.</div>
+        </div>
+      </div>
+
+      <div class="settings-toggle">
+        <label class="switch">
+          <input type="checkbox" id="muteToggle" />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div class="toggle-label">Mute Luna's voice</div>
+          <div class="toggle-help">Stop spoken replies. Text answers still appear in Activity.</div>
+        </div>
+      </div>
+
+      <button id="clearGraphBtn" class="resume-btn view full-width">Clear knowledge graph</button>
+      <button id="clearHistoryBtn" class="resume-btn view full-width">Clear activity history</button>
+
+      <p class="settings-note">
+        Voice input needs Chrome/Edge (Web Speech API). Everything &mdash; your graph, captures, and
+        activity &mdash; is saved only in this browser. A website can't open apps or tap around your
+        phone for you &mdash; that part of Luna lives in the
+        <a href="https://github.com/deezi74/Portfolio/tree/main/luna-android" target="_blank" rel="noopener">native Android app</a>.
+      </p>
+    </div>
+  </div>
+
+  <script src="luna.js"></script>
+</body>
+</html>
