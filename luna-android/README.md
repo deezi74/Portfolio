@@ -21,28 +21,37 @@ it in Settings, one at a time.
    automatically if it's missing).
 3. Run on a device/emulator running Android 8.0 (API 26) or newer.
 
-## Set up your API key - or skip it entirely with a local model
+## Set up your API key - your own provider, or skip it entirely with a local model
 
-Luna never ships with a real API key baked in. Add a free **Gemini API key**
-via the gear icon: <https://aistudio.google.com/apikey>. It's stored in a
-private `SharedPreferences` file on the device only - along with your
-knowledge graph and activity log - nothing is synced to a server, by design,
-since this app has none.
+Luna never ships with a real API key baked in. Settings has four provider
+options, all stored in a private `SharedPreferences` file on the device only
+- along with your knowledge graph and activity log - nothing is synced to a
+server, by design, since this app has none.
 
-Prefer not to use a cloud key at all? Settings has two local, no-API-key options:
-
-- **Local server on this device** - points at an Ollama-compatible server you
-  already have running with a model pulled, on the phone itself (e.g. via
-  Termux) or another device on your network, by URL + model name.
+- **Cloud (Gemini)** - Luna's default, native integration. Add a free
+  **Gemini API key** via the gear icon: <https://aistudio.google.com/apikey>.
+- **Custom Cloud API** - bring your own key and endpoint for *any*
+  OpenAI-chat-completions-compatible provider - OpenAI, Groq, OpenRouter,
+  Together, Mistral, DeepSeek, xAI, a self-hosted gateway, whatever you
+  already have a key for. Enter the endpoint URL, your key (leave it blank
+  if the endpoint doesn't need one), and a model name. Gets the full
+  phone-control tool loop, same as Gemini, since these APIs generally
+  support real function calling reliably.
+- **Local server on this device** - points at an Ollama-compatible server
+  you already have running with a model pulled, on the phone itself (e.g.
+  via Termux) or another device on your network, by URL + model name. No key.
 - **Local model file, on-device** - pick an actual `.gguf` file you've
   already downloaded (from a file picker, no server needed at all) and Luna
   runs it directly, on-device, via a vendored copy of llama.cpp's own
-  Kotlin/JNI bridge (see "On-device GGUF models" below).
+  Kotlin/JNI bridge (see "On-device GGUF models" below). No key.
 
-Either way, nothing leaves your network - and both share the same trade-off:
-local models don't get the phone-control tools (open_app/show_screen/tap/...)
-- just knowledge capture and grounded Q&A - since reliably driving a
-multi-step tool loop needs more than most local models can promise right now.
+The two local options share a trade-off: no phone-control tools
+(open_app/show_screen/tap/...) - just knowledge capture and grounded Q&A -
+since reliably driving a multi-step tool loop needs more than most local
+models can promise right now. Photo capture is Gemini-only for the same
+reason on the vision side (some Custom Cloud API providers do support
+images, but not reliably enough across arbitrary providers to promise it
+here).
 
 ## What's in here
 

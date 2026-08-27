@@ -581,9 +581,15 @@ public class MainActivity extends Activity {
         localFileRadio.setText("Local model file, on-device — no API key");
         providerGroup.addView(localFileRadio);
 
+        RadioButton customCloudRadio = new RadioButton(this);
+        customCloudRadio.setId(View.generateViewId());
+        customCloudRadio.setText("Custom Cloud API — your own key, any provider");
+        providerGroup.addView(customCloudRadio);
+
         int checkedId = cloudRadio.getId();
         if (brain.isLocalServerProvider()) checkedId = localServerRadio.getId();
         else if (brain.isLocalFileProvider()) checkedId = localFileRadio.getId();
+        else if (brain.isCustomCloudProvider()) checkedId = customCloudRadio.getId();
         providerGroup.check(checkedId);
         providerGroup.setPadding(0, 0, 0, dp(8));
         layout.addView(providerGroup);
@@ -656,15 +662,50 @@ public class MainActivity extends Activity {
         localFileSection.addView(localFileHelp);
         layout.addView(localFileSection);
 
+        // ---- custom cloud fields (any OpenAI-chat-completions-compatible API) ----
+        LinearLayout customCloudSection = new LinearLayout(this);
+        customCloudSection.setOrientation(LinearLayout.VERTICAL);
+
+        EditText customCloudUrlInput = new EditText(this);
+        customCloudUrlInput.setHint("Endpoint URL");
+        customCloudUrlInput.setText(brain.getCustomCloudUrl());
+        customCloudSection.addView(customCloudUrlInput);
+
+        EditText customCloudKeyInput = new EditText(this);
+        customCloudKeyInput.setHint("API key (leave blank if none needed)");
+        customCloudKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        customCloudKeyInput.setText(brain.getCustomCloudKey());
+        customCloudKeyInput.setPadding(0, dp(6), 0, 0);
+        customCloudSection.addView(customCloudKeyInput);
+
+        EditText customCloudModelInput = new EditText(this);
+        customCloudModelInput.setHint("Model name (e.g. gpt-4o-mini)");
+        customCloudModelInput.setText(brain.getCustomCloudModel());
+        customCloudModelInput.setPadding(0, dp(6), 0, 0);
+        customCloudSection.addView(customCloudModelInput);
+
+        TextView customCloudHelp = new TextView(this);
+        customCloudHelp.setText("Works with any OpenAI-compatible chat-completions API - OpenAI, Groq, " +
+                "OpenRouter, Together, Mistral, DeepSeek, xAI, a self-hosted gateway, etc. Your key is " +
+                "stored only on this device and sent only to the endpoint you enter. Gets the same " +
+                "screen-control/calls/texts/reminders tools as the Gemini provider.");
+        customCloudHelp.setTextSize(12);
+        customCloudHelp.setPadding(0, 4, 0, pad);
+        customCloudSection.addView(customCloudHelp);
+        layout.addView(customCloudSection);
+
         RadioButton finalLocalServerRadio = localServerRadio;
         RadioButton finalLocalFileRadio = localFileRadio;
+        RadioButton finalCustomCloudRadio = customCloudRadio;
         Runnable updateProviderSections = () -> {
             int checked = providerGroup.getCheckedRadioButtonId();
             boolean isLocalServer = checked == finalLocalServerRadio.getId();
             boolean isLocalFile = checked == finalLocalFileRadio.getId();
-            cloudSection.setVisibility(isLocalServer || isLocalFile ? View.GONE : View.VISIBLE);
+            boolean isCustomCloud = checked == finalCustomCloudRadio.getId();
+            cloudSection.setVisibility(isLocalServer || isLocalFile || isCustomCloud ? View.GONE : View.VISIBLE);
             localServerSection.setVisibility(isLocalServer ? View.VISIBLE : View.GONE);
             localFileSection.setVisibility(isLocalFile ? View.VISIBLE : View.GONE);
+            customCloudSection.setVisibility(isCustomCloud ? View.VISIBLE : View.GONE);
         };
         updateProviderSections.run();
         providerGroup.setOnCheckedChangeListener((group, id) -> updateProviderSections.run());
@@ -795,11 +836,15 @@ public class MainActivity extends Activity {
                     brain.setApiKey(key);
                     brain.setLocalUrl(localUrlInput.getText().toString().trim());
                     brain.setLocalModel(localModelInput.getText().toString().trim());
+                    brain.setCustomCloudUrl(customCloudUrlInput.getText().toString().trim());
+                    brain.setCustomCloudKey(customCloudKeyInput.getText().toString().trim());
+                    brain.setCustomCloudModel(customCloudModelInput.getText().toString().trim());
 
                     int checkedNow = providerGroup.getCheckedRadioButtonId();
                     String provider = LunaBrain.PROVIDER_GEMINI;
                     if (checkedNow == finalLocalServerRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_SERVER;
                     else if (checkedNow == finalLocalFileRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_FILE;
+                    else if (checkedNow == finalCustomCloudRadio.getId()) provider = LunaBrain.PROVIDER_CUSTOM_CLOUD;
                     brain.setProvider(provider);
 
                     brain.setCustomSystemPrompt(customPromptInput.getText().toString().trim());

@@ -34,11 +34,16 @@ public class LunaBrain {
     private static final String PREF_LOCAL_MODEL = "local_model";
     private static final String PREF_LOCAL_MODEL_FILE_PATH = "local_model_file_path";
     private static final String PREF_CUSTOM_SYSTEM_PROMPT = "custom_system_prompt";
+    private static final String PREF_CUSTOM_CLOUD_URL = "custom_cloud_url";
+    private static final String PREF_CUSTOM_CLOUD_KEY = "custom_cloud_key";
+    private static final String PREF_CUSTOM_CLOUD_MODEL = "custom_cloud_model";
 
     public static final String PROVIDER_GEMINI = "gemini";
     public static final String PROVIDER_LOCAL_SERVER = "local_server";
     public static final String PROVIDER_LOCAL_FILE = "local_file";
+    public static final String PROVIDER_CUSTOM_CLOUD = "custom_cloud";
     private static final String DEFAULT_LOCAL_URL = "http://127.0.0.1:11434";
+    private static final String DEFAULT_CUSTOM_CLOUD_URL = "https://api.openai.com/v1/chat/completions";
 
     private static final String MODEL = "gemini-3.6-flash";
 
@@ -128,6 +133,7 @@ public class LunaBrain {
     public void setProvider(String provider) { prefs.edit().putString(PREF_PROVIDER, provider).apply(); }
     public boolean isLocalServerProvider() { return PROVIDER_LOCAL_SERVER.equals(getProvider()); }
     public boolean isLocalFileProvider() { return PROVIDER_LOCAL_FILE.equals(getProvider()); }
+    public boolean isCustomCloudProvider() { return PROVIDER_CUSTOM_CLOUD.equals(getProvider()); }
 
     public String getLocalUrl() { return prefs.getString(PREF_LOCAL_URL, DEFAULT_LOCAL_URL); }
     public void setLocalUrl(String url) { prefs.edit().putString(PREF_LOCAL_URL, url).apply(); }
@@ -138,6 +144,18 @@ public class LunaBrain {
     /** Absolute path to the GGUF file copied into app-private storage by the file picker. */
     public String getLocalModelFilePath() { return prefs.getString(PREF_LOCAL_MODEL_FILE_PATH, ""); }
     public void setLocalModelFilePath(String path) { prefs.edit().putString(PREF_LOCAL_MODEL_FILE_PATH, path).apply(); }
+
+    /** Any OpenAI-chat-completions-compatible endpoint (OpenAI, Groq, OpenRouter, Together,
+     *  Mistral, DeepSeek, xAI, a self-hosted gateway, ...) - the user's own URL, key, and model
+     *  name, no hardcoded provider. See {@link #callCustomCloudChat}. */
+    public String getCustomCloudUrl() { return prefs.getString(PREF_CUSTOM_CLOUD_URL, DEFAULT_CUSTOM_CLOUD_URL); }
+    public void setCustomCloudUrl(String url) { prefs.edit().putString(PREF_CUSTOM_CLOUD_URL, url).apply(); }
+
+    public String getCustomCloudKey() { return prefs.getString(PREF_CUSTOM_CLOUD_KEY, ""); }
+    public void setCustomCloudKey(String key) { prefs.edit().putString(PREF_CUSTOM_CLOUD_KEY, key).apply(); }
+
+    public String getCustomCloudModel() { return prefs.getString(PREF_CUSTOM_CLOUD_MODEL, ""); }
+    public void setCustomCloudModel(String model) { prefs.edit().putString(PREF_CUSTOM_CLOUD_MODEL, model).apply(); }
 
     /** User-written extra instructions (tone, nickname, house rules, ...), folded into the
      *  system prompt for every provider - see {@link #customPromptBlock()}. Empty by default. */
@@ -158,12 +176,14 @@ public class LunaBrain {
     public boolean isConfigured() {
         if (isLocalServerProvider()) return !getLocalModel().trim().isEmpty();
         if (isLocalFileProvider()) return !getLocalModelFilePath().trim().isEmpty();
+        if (isCustomCloudProvider()) return !getCustomCloudUrl().trim().isEmpty() && !getCustomCloudModel().trim().isEmpty();
         return !getApiKey().isEmpty();
     }
 
     public String configurationHint() {
         if (isLocalServerProvider()) return "Set a local model name first, in Luna's settings.";
         if (isLocalFileProvider()) return "Choose a local model file first, in Luna's settings.";
+        if (isCustomCloudProvider()) return "Set a Cloud API endpoint and model name first, in Luna's settings.";
         return "Add your Gemini API key first, in Luna's settings.";
     }
 
@@ -181,6 +201,10 @@ public class LunaBrain {
         }
         if (isLocalFileProvider()) {
             askLocalFile(question, listener);
+            return;
+        }
+        if (isCustomCloudProvider()) {
+            askCustomCloud(question, listener);
             return;
         }
 
@@ -291,6 +315,80 @@ public class LunaBrain {
     }
 
     /**
+     * Same grounded Q&A + phone-control tool loop as the native Gemini path in {@link #ask}, but
+     * against any OpenAI-chat-completions-compatible endpoint the user points Luna at with their
+     * own key - unlike the local providers, these generally support real function calling
+     * reliably enough to drive the same multi-step loop.
+     */
+    private void askCustomCloud(String question, Listener listener) {
+        String notifSummary = new NotificationStore(appContext).recentSummary(15);
+        String systemPrompt = ASK_SYSTEM_PROMPT + customPromptBlock() + store.contextBlock() + TOOLS_ADDENDUM +
+                "\n\nRecent notifications from other apps (if notification access is enabled):\n" + notifSummary;
+        JSONArray messages = new JSONArray();
+
+        try {
+            messages.put(new JSONObject().put("role", "system").put("content", systemPrompt));
+            messages.put(new JSONObject().put("role", "user").put("content", question));
+
+            JSONArray tools = new JSONArray();
+            JSONArray declarations = mergedToolDeclarations();
+            for (int i = 0; i < declarations.length(); i++) tools.put(asOpenAiTool(declarations.getJSONObject(i)));
+
+            for (int step = 0; step < MAX_TOOL_STEPS; step++) {
+                JSONObject requestBody = new JSONObject()
+                        .put("model", getCustomCloudModel())
+                        .put("messages", messages)
+                        .put("tools", tools);
+
+                JSONObject responseJson = callCustomCloudChat(requestBody);
+                JSONObject message = firstChoiceMessage(responseJson);
+                JSONArray toolCalls = message.optJSONArray("tool_calls");
+                messages.put(message);
+
+                if (toolCalls == null || toolCalls.length() == 0) {
+                    String reply = message.optString("content", "");
+                    if (reply.isEmpty()) reply = "(no reply)";
+                    store.logActivity("ask", "Q: " + question + "\nA: " + reply);
+                    listener.onReply(reply);
+                    return;
+                }
+
+                for (int i = 0; i < toolCalls.length(); i++) {
+                    JSONObject call = toolCalls.getJSONObject(i);
+                    JSONObject function = call.getJSONObject("function");
+                    String name = function.getString("name");
+                    JSONObject args;
+                    try {
+                        args = new JSONObject(function.optString("arguments", "{}"));
+                    } catch (Exception badArgs) {
+                        args = new JSONObject();
+                    }
+
+                    listener.onToolStep(describeStep(name, args));
+                    JSONObject result = PhoneTools.handles(name)
+                            ? PhoneTools.execute(appContext, name, args)
+                            : ScreenTools.execute(appContext, name, args);
+
+                    messages.put(new JSONObject()
+                            .put("role", "tool")
+                            .put("tool_call_id", call.optString("id", ""))
+                            .put("content", result.toString()));
+                }
+            }
+
+            String fallback = "That took more steps than I'm allowed - want me to keep going?";
+            store.logActivity("ask", "Q: " + question + "\nA: " + fallback);
+            listener.onReply(fallback);
+        } catch (Exception e) {
+            store.logActivity("system", "Error asking Luna: " + e.getMessage());
+            listener.onError("Error asking Luna: " + e.getMessage());
+        } finally {
+            LunaAccessibilityService service = LunaAccessibilityService.getInstance();
+            if (service != null) service.hideMarkers();
+        }
+    }
+
+    /**
      * The vendored llama.cpp bridge collapses most load failures into
      * UnsupportedArchitectureException with no message (see its own TODO comment) - a bare
      * "null" isn't useful to a user, so give them something they can actually act on instead.
@@ -361,6 +459,10 @@ public class LunaBrain {
             }
             return;
         }
+        if (isCustomCloudProvider()) {
+            captureCustomCloudExtraction(text, listener);
+            return;
+        }
 
         try {
             JSONArray parts = new JSONArray().put(new JSONObject().put("text", text));
@@ -371,13 +473,41 @@ public class LunaBrain {
     }
 
     /**
+     * Same shape as {@link #runGeminiExtraction}, but against the user's own OpenAI-compatible
+     * Cloud API instead of Gemini's native format - forces the record_entities function call via
+     * tool_choice rather than Gemini's tool_config.mode = "ANY".
+     */
+    private void captureCustomCloudExtraction(String text, CaptureListener listener) {
+        try {
+            JSONArray messages = new JSONArray();
+            messages.put(new JSONObject().put("role", "system").put("content", EXTRACT_SYSTEM_PROMPT));
+            messages.put(new JSONObject().put("role", "user").put("content", EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text));
+
+            JSONObject requestBody = new JSONObject()
+                    .put("model", getCustomCloudModel())
+                    .put("messages", messages)
+                    .put("tools", new JSONArray().put(asOpenAiTool(recordEntitiesDeclaration())))
+                    .put("tool_choice", new JSONObject().put("type", "function")
+                            .put("function", new JSONObject().put("name", "record_entities")));
+
+            JSONObject responseJson = callCustomCloudChat(requestBody);
+            JSONObject message = firstChoiceMessage(responseJson);
+            applyExtractedArgs(firstToolCallArgs(message, "record_entities"), listener);
+        } catch (Exception e) {
+            listener.onError("Error capturing: " + e.getMessage());
+        }
+    }
+
+    /**
      * Same extraction pipeline as {@link #capture}, but for a photo (a document, whiteboard,
-     * business card, ...) instead of pasted text - only works with the Gemini provider, which
-     * is multimodal; the local providers here don't support images yet.
+     * business card, ...) instead of pasted text - only works with the native Gemini provider,
+     * which is multimodal; the local providers and the custom Cloud API here don't support
+     * images yet (many OpenAI-compatible endpoints do, but not reliably enough across arbitrary
+     * providers/models to promise it here).
      */
     public void captureImage(byte[] jpegBytes, CaptureListener listener) {
         if (!PROVIDER_GEMINI.equals(getProvider())) {
-            listener.onError("Photo capture needs the Cloud (Gemini) provider - local models don't support images yet.");
+            listener.onError("Photo capture only works with the native Gemini provider right now.");
             return;
         }
         if (getApiKey().isEmpty()) {
@@ -505,6 +635,39 @@ public class LunaBrain {
         return new JSONObject().put("role", "user").put("parts", new JSONArray().put(new JSONObject().put("text", text)));
     }
 
+    /** Wraps a plain {name, description, parameters} declaration (the shape ScreenTools,
+     *  PhoneTools, and recordEntitiesDeclaration() already produce, which happens to match what
+     *  Gemini wants directly) in the OpenAI tools array shape: {type:"function", function:{...}}. */
+    private static JSONObject asOpenAiTool(JSONObject declaration) throws Exception {
+        return new JSONObject().put("type", "function").put("function", declaration);
+    }
+
+    private static JSONObject firstChoiceMessage(JSONObject responseJson) throws Exception {
+        JSONArray choices = responseJson.optJSONArray("choices");
+        if (choices == null || choices.length() == 0) throw new Exception("No choices in the Cloud API's response.");
+        JSONObject message = choices.getJSONObject(0).optJSONObject("message");
+        if (message == null) throw new Exception("Unexpected response shape from the Cloud API.");
+        return message;
+    }
+
+    /** Finds the first tool_calls entry named expectedName and parses its (JSON-string)
+     *  arguments, or null if there isn't one - used for capture()'s forced record_entities call. */
+    private static JSONObject firstToolCallArgs(JSONObject message, String expectedName) {
+        JSONArray toolCalls = message.optJSONArray("tool_calls");
+        if (toolCalls == null) return null;
+        for (int i = 0; i < toolCalls.length(); i++) {
+            JSONObject function = toolCalls.optJSONObject(i) == null ? null : toolCalls.optJSONObject(i).optJSONObject("function");
+            if (function != null && expectedName.equals(function.optString("name"))) {
+                try {
+                    return new JSONObject(function.optString("arguments", "{}"));
+                } catch (Exception badArgs) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
     private JSONObject callGemini(String apiKey, JSONObject requestBody) throws Exception {
         String apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + apiKey;
 
@@ -592,5 +755,55 @@ public class LunaBrain {
         JSONObject message = responseJson.optJSONObject("message");
         if (message == null) throw new Exception("Unexpected response from the local server.");
         return message.optString("content", "");
+    }
+
+    /**
+     * Talks to any OpenAI-chat-completions-compatible endpoint (POST {url},
+     * {model, messages, tools?, tool_choice?} -> {choices:[{message:{...}}]}) - the user's own
+     * URL, API key, and model name, not hardcoded to any one provider. The Authorization header
+     * is only sent when a key is set, since some self-hosted/local gateways speak this same
+     * format without needing one.
+     */
+    private JSONObject callCustomCloudChat(JSONObject requestBody) throws Exception {
+        String base = getCustomCloudUrl().trim();
+        if (base.isEmpty()) throw new Exception("No Cloud API endpoint set.");
+        String model = getCustomCloudModel().trim();
+        if (model.isEmpty()) throw new Exception("No Cloud API model set.");
+
+        URL url;
+        try {
+            url = new URL(base);
+        } catch (Exception e) {
+            throw new Exception("\"" + base + "\" isn't a valid API endpoint URL.");
+        }
+
+        HttpURLConnection conn;
+        try {
+            conn = (HttpURLConnection) url.openConnection();
+        } catch (Exception e) {
+            throw new Exception("Couldn't reach " + base + ".");
+        }
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        String key = getCustomCloudKey().trim();
+        if (!key.isEmpty()) conn.setRequestProperty("Authorization", "Bearer " + key);
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(60000);
+
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(requestBody.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new Exception("Couldn't reach " + base + ".");
+        }
+
+        int responseCode = conn.getResponseCode();
+        Scanner scanner = new Scanner(responseCode == 200 ? conn.getInputStream() : conn.getErrorStream(), "UTF-8");
+        StringBuilder responseBuilder = new StringBuilder();
+        while (scanner.hasNextLine()) responseBuilder.append(scanner.nextLine());
+        scanner.close();
+
+        if (responseCode != 200) throw new Exception("Cloud API error (" + responseCode + ") - " + responseBuilder);
+        return new JSONObject(responseBuilder.toString());
     }
 }
