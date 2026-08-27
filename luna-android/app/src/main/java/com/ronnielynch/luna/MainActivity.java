@@ -17,6 +17,7 @@ import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityManager;
@@ -668,6 +669,27 @@ public class MainActivity extends Activity {
         updateProviderSections.run();
         providerGroup.setOnCheckedChangeListener((group, id) -> updateProviderSections.run());
 
+        TextView customPromptLabel = new TextView(this);
+        customPromptLabel.setText("Custom instructions (optional)");
+        customPromptLabel.setTextSize(12);
+        customPromptLabel.setPadding(0, 0, 0, dp(4));
+        layout.addView(customPromptLabel);
+
+        EditText customPromptInput = new EditText(this);
+        customPromptInput.setHint("e.g. \"Call me Boss\", \"keep answers to one sentence\", \"you're a bit sarcastic\"");
+        customPromptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        customPromptInput.setMinLines(3);
+        customPromptInput.setGravity(Gravity.TOP | Gravity.START);
+        customPromptInput.setText(brain.getCustomSystemPrompt());
+        layout.addView(customPromptInput);
+
+        TextView customPromptHelp = new TextView(this);
+        customPromptHelp.setText("Your own instructions for how Luna should talk or behave, on top of her " +
+                "built-in ones - applies no matter which provider above is selected.");
+        customPromptHelp.setTextSize(12);
+        customPromptHelp.setPadding(0, 4, 0, pad);
+        layout.addView(customPromptHelp);
+
         Switch alwaysListenSwitch = new Switch(this);
         alwaysListenSwitch.setText("Always listen for “Luna”");
         alwaysListenSwitch.setChecked(brain.isAlwaysListening());
@@ -779,6 +801,8 @@ public class MainActivity extends Activity {
                     if (checkedNow == finalLocalServerRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_SERVER;
                     else if (checkedNow == finalLocalFileRadio.getId()) provider = LunaBrain.PROVIDER_LOCAL_FILE;
                     brain.setProvider(provider);
+
+                    brain.setCustomSystemPrompt(customPromptInput.getText().toString().trim());
 
                     brain.setMuted(muteSwitch.isChecked());
                     systemsLabel.setText(brain.isConfigured() ? "All systems connected" : brain.configurationHint());

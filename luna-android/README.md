@@ -105,6 +105,16 @@ relationships gets hung off that hub so nothing floats away disconnected.
 it's a single-shot query bar, and every question and answer gets logged to
 **Activity** so you can look back at it.
 
+## Custom instructions
+
+Settings has a free-text "Custom instructions" box - anything you write there
+(a nickname, a tone, a house rule like "keep answers to one sentence") gets
+folded into Luna's system prompt on every question, on top of her built-in
+instructions, no matter which provider (Cloud, local server, or local file)
+is selected. It only shapes how she answers - it doesn't get applied to
+knowledge-graph extraction, which stays strictly factual on purpose. Empty by
+default, stored the same private on-device way as everything else.
+
 ## Always-listening wake word
 
 Off by default. Turn it on in Settings and Luna keeps the mic listening in
