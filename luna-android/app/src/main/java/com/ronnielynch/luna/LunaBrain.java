@@ -261,9 +261,9 @@ public class LunaBrain {
     private void askLocalFile(String question, Listener listener) {
         try {
             LocalLlm llm = getLocalLlm();
-            llm.loadModelIfNeeded(getLocalModelFilePath());
             String systemPrompt = ASK_SYSTEM_PROMPT + store.contextBlock() + LOCAL_TOOLS_NOTE;
-            String reply = llm.generate(systemPrompt, question);
+            llm.loadModelIfNeeded(getLocalModelFilePath(), systemPrompt);
+            String reply = llm.generate(question);
             if (reply == null || reply.trim().isEmpty()) reply = "(no reply)";
             store.logActivity("ask", "Q: " + question + "\nA: " + reply);
             listener.onReply(reply);
@@ -337,9 +337,9 @@ public class LunaBrain {
         if (isLocalFileProvider()) {
             try {
                 LocalLlm llm = getLocalLlm();
-                llm.loadModelIfNeeded(getLocalModelFilePath());
                 String prompt = EXTRACT_SYSTEM_PROMPT + "\n\n" + EXTRACT_JSON_INSTRUCTIONS + "\n\nText:\n" + text;
-                applyExtractedArgs(extractJsonObject(llm.generate(null, prompt)), listener);
+                llm.loadModelIfNeeded(getLocalModelFilePath(), null);
+                applyExtractedArgs(extractJsonObject(llm.generate(prompt)), listener);
             } catch (Throwable t) {
                 listener.onError("Error capturing: " + describeLocalModelError(t));
             }
