@@ -36,12 +36,23 @@ set(LLAMA_BUILD_APP OFF CACHE BOOL "" FORCE)
 set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 
-# GGML_NATIVE off + ALL_VARIANTS/BACKEND_DL on: build every CPU-feature
-# variant (generic/dotprod/i8mm/...) and pick the right one at runtime,
-# since we don't know the exact chip in whatever phone this runs on.
+# Deliberately NOT using GGML_BACKEND_DL/GGML_CPU_ALL_VARIANTS here. That
+# configuration builds every CPU-feature variant (generic/dotprod/i8mm/...)
+# as separate .so files and dlopens the best match at runtime via
+# ggml_backend_load_all_from_path() in ai_chat.cpp's init() - which doesn't
+# check whether that call actually found anything. If it silently finds
+# zero backends (e.g. a linker/path issue specific to this dynamic-loading
+# scheme on a given device), every single model load fails with the same
+# generic error regardless of which GGUF file is picked - which is exactly
+# what real-device testing on this project hit. A statically-linked CPU
+# backend removes that whole failure class: it's registered automatically
+# as part of normal shared-library loading, the same reliable mechanism
+# every other native lib in this app already depends on. Cost: one generic
+# ARMv8-A baseline build instead of per-chip-optimized kernels - slower,
+# but it either works or fails in a way that isn't "invisible dlopen no-op".
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
-set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
-set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
