@@ -2,15 +2,24 @@ package com.ronnielynch.luna;
 
 import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -62,6 +71,7 @@ public class MainActivity extends Activity {
     private static final int REQ_PHONE_PERMISSIONS = 104;
     private static final int REQ_BLUETOOTH = 105;
     private static final int REQ_IMAGE_CAPTURE = 106;
+    private static final int REQ_PICK_MODEL_FOLDER = 107;
 
     private GraphView graphView;
     private TextView knowledgeSub, physicsLabel, systemsLabel, orbLabel;
@@ -76,6 +86,14 @@ public class MainActivity extends Activity {
     // Same pattern, for the capture dialog's status line and a pending camera capture.
     private TextView captureStatusText;
     private Uri pendingPhotoUri;
+
+    // In-app model downloads (DownloadManager) - id of the download currently in flight (-1 if
+    // none), plus a poll loop that keeps localFileStatusText's percentage current while the
+    // settings dialog is open. The completion broadcast still fires (and finishes the download)
+    // even if the dialog gets closed/reopened in between.
+    private long pendingDownloadId = -1;
+    private final Handler downloadProgressHandler = new Handler(Looper.getMainLooper());
+    private BroadcastReceiver downloadReceiver;
 
     private TextToSpeech tts;
     private LunaBrain brain;
@@ -146,6 +164,8 @@ public class MainActivity extends Activity {
 
         refreshStats();
         graphView.post(graphView::fitToScreen);
+
+        registerDownloadReceiver();
 
         if (!brain.isConfigured()) {
             systemsLabel.setText(brain.configurationHint());
@@ -226,6 +246,9 @@ public class MainActivity extends Activity {
         } else if (requestCode == REQ_PICK_MODEL_FILE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) copyModelFile(uri);
+        } else if (requestCode == REQ_PICK_MODEL_FOLDER && resultCode == RESULT_OK && data != null) {
+            Uri treeUri = data.getData();
+            if (treeUri != null) scanTreeForGguf(treeUri);
         } else if (requestCode == REQ_IMAGE_CAPTURE && resultCode == RESULT_OK) {
             handleCapturedPhoto();
         }
@@ -549,6 +572,260 @@ public class MainActivity extends Activity {
         return bytes + " B";
     }
 
+    // ---------- find an already-downloaded .gguf file ----------
+
+    /** llama.cpp only ever understands one real format - GGUF - no matter what a file's called,
+     *  so "support more formats" means making the one real format easier to find, not adding
+     *  more of them. This lets the user grant Luna one folder (e.g. Downloads) via the system
+     *  picker - no broad storage permission needed - and scans it for .gguf files already sitting
+     *  there instead of making them hunt one down manually in the generic file picker. */
+    private void scanForModels() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        try {
+            startActivityForResult(intent, REQ_PICK_MODEL_FOLDER);
+        } catch (Exception e) {
+            Toast.makeText(this, "No folder picker available on this device", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void scanTreeForGguf(Uri treeUri) {
+        if (localFileStatusText != null) localFileStatusText.setText("Scanning for .gguf files...");
+        new Thread(() -> {
+            List<FoundModel> found = new ArrayList<>();
+            try {
+                String rootDocId = DocumentsContract.getTreeDocumentId(treeUri);
+                walkDocumentTree(treeUri, rootDocId, found, 0);
+            } catch (Exception ignored) {
+                // Whatever was found before the error still gets shown below.
+            }
+            runOnUiThread(() -> showFoundModelsDialog(found));
+        }).start();
+    }
+
+    private static class FoundModel {
+        final String name;
+        final long size;
+        final Uri uri;
+        FoundModel(String name, long size, Uri uri) { this.name = name; this.size = size; this.uri = uri; }
+    }
+
+    /** Depth/count caps keep this from wandering forever into a huge or deeply-nested folder -
+     *  a model folder the user picked doesn't need either. */
+    private void walkDocumentTree(Uri treeUri, String parentDocId, List<FoundModel> found, int depth) {
+        if (depth > 6 || found.size() >= 200) return;
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
+        try (Cursor cursor = getContentResolver().query(childrenUri, new String[]{
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE}, null, null, null)) {
+            if (cursor == null) return;
+            while (cursor.moveToNext() && found.size() < 200) {
+                String docId = cursor.getString(0);
+                String name = cursor.getString(1);
+                String mime = cursor.getString(2);
+                long size = cursor.getLong(3);
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    walkDocumentTree(treeUri, docId, found, depth + 1);
+                } else if (name != null && name.toLowerCase(Locale.US).endsWith(".gguf")) {
+                    found.add(new FoundModel(name, size, DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void showFoundModelsDialog(List<FoundModel> found) {
+        if (localFileStatusText != null) {
+            String existingPath = brain.getLocalModelFilePath();
+            localFileStatusText.setText(existingPath.isEmpty() ? "No file chosen yet." : "Current: " + new File(existingPath).getName());
+        }
+        if (found.isEmpty()) {
+            Toast.makeText(this, "No .gguf files found in that folder.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String[] labels = new String[found.size()];
+        for (int i = 0; i < found.size(); i++) {
+            labels[i] = found.get(i).name + " (" + formatSize(found.get(i).size) + ")";
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Found " + found.size() + " model" + (found.size() == 1 ? "" : "s"))
+                .setItems(labels, (dialog, which) -> copyModelFile(found.get(which).uri))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ---------- download a model from within the app ----------
+
+    /**
+     * DownloadManager.ACTION_DOWNLOAD_COMPLETE is a system-protected broadcast (only the OS can
+     * send it), so RECEIVER_NOT_EXPORTED - registered below on API 33+, the only levels that
+     * support that overload - is the right, safe choice; on 26-32 there's no flag-taking
+     * overload to call at all. Lint's UnspecifiedRegisterReceiverFlag check doesn't trace the
+     * SDK_INT branch, so it flags the plain 2-arg call in the else branch as if it might run
+     * unguarded on 33+ - it can't, hence the suppression.
+     */
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerDownloadReceiver() {
+        downloadReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                if (id == pendingDownloadId) finishDownload(id);
+            }
+        };
+        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(downloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(downloadReceiver, filter);
+        }
+    }
+
+    private void showDownloadModelDialog() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        layout.setPadding(pad, pad, pad, pad);
+
+        TextView intro = new TextView(this);
+        intro.setText("A few small, known-good models, or paste your own direct .gguf link below.");
+        intro.setTextSize(12);
+        intro.setPadding(0, 0, 0, dp(10));
+        layout.addView(intro);
+
+        for (ModelCatalog.Entry entry : ModelCatalog.ENTRIES) {
+            Button b = new Button(this);
+            b.setText(entry.name + " — " + formatSize(entry.approxBytes) + "\n" + entry.description);
+            b.setAllCaps(false);
+            b.setOnClickListener(v -> {
+                String fileName = entry.name.toLowerCase(Locale.US).replaceAll("[^a-z0-9]+", "-") + ".gguf";
+                startModelDownload(entry.url, fileName, entry.name);
+            });
+            layout.addView(b);
+        }
+
+        TextView urlLabel = new TextView(this);
+        urlLabel.setText("Or paste a direct .gguf URL");
+        urlLabel.setTextSize(12);
+        urlLabel.setPadding(0, dp(14), 0, dp(4));
+        layout.addView(urlLabel);
+
+        EditText urlInput = new EditText(this);
+        urlInput.setHint("https://.../model.gguf");
+        layout.addView(urlInput);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Download a model")
+                .setView(scroll)
+                .setPositiveButton("Download", (dialog, which) -> {
+                    String url = urlInput.getText().toString().trim();
+                    if (url.isEmpty()) return;
+                    String guessedName = url.substring(url.lastIndexOf('/') + 1);
+                    if (guessedName.isEmpty() || !guessedName.toLowerCase(Locale.US).endsWith(".gguf")) {
+                        guessedName = "model_" + System.currentTimeMillis() + ".gguf";
+                    }
+                    startModelDownload(url, guessedName, guessedName);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /**
+     * Downloads via the system {@link DownloadManager} rather than a hand-rolled HTTP stream -
+     * it survives this Activity being backgrounded, shows real progress in the system
+     * notification shade, and needs no storage permission when the destination is the app's own
+     * external-files directory (still private to Luna, just not internal storage - a real
+     * filesystem path either way, which is all llama.cpp needs).
+     */
+    private void startModelDownload(String url, String fileName, String displayName) {
+        if (pendingDownloadId != -1) {
+            Toast.makeText(this, "A download is already in progress.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri uri;
+        try {
+            uri = Uri.parse(url);
+            if (uri.getScheme() == null || !uri.getScheme().startsWith("http")) throw new IllegalArgumentException();
+        } catch (Exception e) {
+            Toast.makeText(this, "That doesn't look like a valid URL.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (downloadManager == null) {
+            Toast.makeText(this, "Downloads aren't available on this device.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(uri);
+            request.setTitle("Luna: " + displayName);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName);
+            request.setAllowedOverMetered(true);
+            pendingDownloadId = downloadManager.enqueue(request);
+            if (localFileStatusText != null) localFileStatusText.setText("Downloading " + displayName + "... 0%");
+            downloadProgressHandler.post(this::pollDownloadProgress);
+        } catch (Exception e) {
+            pendingDownloadId = -1;
+            Toast.makeText(this, "Couldn't start the download: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void pollDownloadProgress() {
+        if (pendingDownloadId == -1) return;
+        DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (downloadManager == null) return;
+        try (Cursor cursor = downloadManager.query(new DownloadManager.Query().setFilterById(pendingDownloadId))) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                long soFar = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+                long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+                if (status == DownloadManager.STATUS_RUNNING && total > 0 && localFileStatusText != null) {
+                    int percent = (int) (100L * soFar / total);
+                    localFileStatusText.setText("Downloading... " + percent + "% (" + formatSize(soFar) + " / " + formatSize(total) + ")");
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        // finishDownload() (from the completion broadcast) sets pendingDownloadId back to -1,
+        // which is what ends this loop - no separate cancellation needed.
+        if (pendingDownloadId != -1) downloadProgressHandler.postDelayed(this::pollDownloadProgress, 1500);
+    }
+
+    private void finishDownload(long id) {
+        DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        pendingDownloadId = -1;
+        if (downloadManager == null) return;
+        try (Cursor cursor = downloadManager.query(new DownloadManager.Query().setFilterById(id))) {
+            if (cursor == null || !cursor.moveToFirst()) return;
+            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                String localUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI));
+                if (localUri == null) return;
+                File file = new File(Uri.parse(localUri).getPath());
+                brain.setLocalModelFilePath(file.getAbsolutePath());
+                if (localFileStatusText != null) {
+                    localFileStatusText.setText("Ready: " + file.getName() + " (" + formatSize(file.length()) + ")");
+                }
+                systemsLabel.setText(brain.isConfigured() ? "All systems connected" : brain.configurationHint());
+                Toast.makeText(this, "Model downloaded.", Toast.LENGTH_SHORT).show();
+            } else {
+                int reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+                if (localFileStatusText != null) {
+                    String existingPath = brain.getLocalModelFilePath();
+                    localFileStatusText.setText(existingPath.isEmpty() ? "No file chosen yet." : "Current: " + new File(existingPath).getName());
+                }
+                Toast.makeText(this, "Download failed (error " + reason + ") - check the URL and try again.", Toast.LENGTH_LONG).show();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     // ---------- settings ----------
 
     private void showSettingsDialog() {
@@ -652,11 +929,25 @@ public class MainActivity extends Activity {
         chooseFileButton.setOnClickListener(v -> pickModelFile());
         localFileSection.addView(chooseFileButton);
 
+        Button scanFolderButton = new Button(this);
+        scanFolderButton.setText("Scan a folder for .gguf files...");
+        scanFolderButton.setOnClickListener(v -> scanForModels());
+        scanFolderButton.setPadding(0, dp(6), 0, 0);
+        localFileSection.addView(scanFolderButton);
+
+        Button downloadModelButton = new Button(this);
+        downloadModelButton.setText("Download a model...");
+        downloadModelButton.setOnClickListener(v -> showDownloadModelDialog());
+        downloadModelButton.setPadding(0, dp(6), 0, 0);
+        localFileSection.addView(downloadModelButton);
+
         TextView localFileHelp = new TextView(this);
-        localFileHelp.setText("Runs a .gguf file you've already downloaded directly on this device, no " +
-                "server, no key. The file is copied into Luna's private storage the first time, which " +
-                "can take a while for a large model. Screen-control tools aren't available in either " +
-                "local mode yet - just Q&A and knowledge capture.");
+        localFileHelp.setText("Runs a .gguf file directly on this device, no server, no key - GGUF is the " +
+                "one format the on-device engine actually understands, whatever a file's named. Pick a " +
+                "file you already have, scan a folder (e.g. Downloads) for ones already there, or " +
+                "download one straight into Luna below. A picked/scanned file is copied into Luna's " +
+                "private storage first, which can take a while for a large model. Screen-control tools " +
+                "aren't available in either local mode yet - just Q&A and knowledge capture.");
         localFileHelp.setTextSize(12);
         localFileHelp.setPadding(0, 4, 0, pad);
         localFileSection.addView(localFileHelp);
@@ -981,6 +1272,13 @@ public class MainActivity extends Activity {
             tts.stop();
             tts.shutdown();
         }
+        if (downloadReceiver != null) {
+            try {
+                unregisterReceiver(downloadReceiver);
+            } catch (Exception ignored) {
+            }
+        }
+        downloadProgressHandler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 }

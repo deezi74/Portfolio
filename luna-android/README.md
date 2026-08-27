@@ -40,10 +40,10 @@ server, by design, since this app has none.
 - **Local server on this device** - points at an Ollama-compatible server
   you already have running with a model pulled, on the phone itself (e.g.
   via Termux) or another device on your network, by URL + model name. No key.
-- **Local model file, on-device** - pick an actual `.gguf` file you've
-  already downloaded (from a file picker, no server needed at all) and Luna
-  runs it directly, on-device, via a vendored copy of llama.cpp's own
-  Kotlin/JNI bridge (see "On-device GGUF models" below). No key.
+- **Local model file, on-device** - pick, scan for, or download a `.gguf`
+  file (no server needed at all) and Luna runs it directly, on-device, via a
+  vendored copy of llama.cpp's own Kotlin/JNI bridge (see "On-device model
+  files" below). No key.
 
 The two local options share a trade-off: no phone-control tools
 (open_app/show_screen/tap/...) - just knowledge capture and grounded Q&A -
@@ -52,6 +52,35 @@ models can promise right now. Photo capture is Gemini-only for the same
 reason on the vision side (some Custom Cloud API providers do support
 images, but not reliably enough across arbitrary providers to promise it
 here).
+
+## On-device model files: pick, scan, or download
+
+GGUF is the one format the on-device engine (llama.cpp) actually
+understands, no matter what a file is named or where it came from - so
+"more formats" here means making that one real format easier to get onto
+your phone, not supporting more formats. Three ways to do that, all in
+Settings under "Local model file, on-device":
+
+- **Choose model file (.gguf)...** - the original file picker, for a
+  `.gguf` you've already got somewhere on the device.
+- **Scan a folder for .gguf files...** - grant Luna access to one folder
+  (e.g. Downloads) via Android's normal folder picker - no broad storage
+  permission needed - and she'll look through it (and its subfolders) for
+  `.gguf` files already sitting there, so you don't have to hunt one down
+  by hand.
+- **Download a model...** - a short list of small, known-good models
+  (Qwen2.5, Gemma 2, Llama 3.2 - all in the 1.5-3B range, a good fit for a
+  phone) you can grab with one tap, or paste any direct `.gguf` URL
+  yourself (e.g. from a Hugging Face model page). Downloads run through
+  Android's system Download Manager, so they show real progress in the
+  notification shade and survive the app being backgrounded.
+
+Whichever way a file arrives, it ends up somewhere Luna can point
+llama.cpp's `loadModel()` at with a real filesystem path - a picked or
+scanned file gets copied into Luna's private internal storage; a
+downloaded one lands in Luna's private external-files directory. Both are
+private to Luna either way, just two different (and equally normal)
+places Android keeps app-private files.
 
 ## What's in here
 
